@@ -1,5 +1,7 @@
 # Cross-Claude MCP
 
+**Project type**: Personal open-source project — Simple Mode always on.
+
 ## Architecture: Dual-Repo Model
 
 **Public (open-source)**: This repo (`rblank9/cross-claude-mcp`) — MIT licensed
