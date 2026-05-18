@@ -204,7 +204,7 @@ li{margin:4px 0}</style></head>
   const sessions = new Map();
 
   // TTL eviction: sweep idle sessions every 60s
-  const SESSION_IDLE_MS = 5 * 60 * 1000; // 5 minutes
+  const SESSION_IDLE_MS = 24 * 60 * 60 * 1000; // 24 hours
   const sweepSessions = () => {
     const now = Date.now();
     for (const [sid, entry] of sessions.entries()) {
