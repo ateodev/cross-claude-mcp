@@ -1,11 +1,6 @@
 ---
 name: cross-claude
-description: >
-  Enforce Cross-Claude MCP collaboration protocol: session startup, channel
-  discipline, persistent connections, done signals. Triggers on Cross-Claude
-  tool usage or collaboration keywords like "collaborate", "cross-claude",
-  "send message to", "talk to", "work with", "coordinate with", "message bus",
-  "other instance", "other Claude".
+description: "Cross-Claude MCP protocol. Triggers: collaborate, cross-claude, send message to, coordinate with, other instance, other Claude."
 ---
 
 # Cross-Claude MCP — Collaboration Protocol
