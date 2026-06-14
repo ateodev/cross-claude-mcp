@@ -69,6 +69,12 @@ structurally cannot be. This is the primary advantage of spawning a peer over a 
 orchestrate from one project, stand up an expert in another, and have it report back live
 over the channel. Without `--project`, the peer inherits the spawner's own cwd.
 
+Peers launch with `--settings '{"enableAllProjectMcpServers":true}'`, so they auto-trust and
+can CALL the target project's `.mcp.json` servers (not merely enumerate them). This is a
+per-launch flag scoped to spawned peers ONLY — it edits no project file and does not loosen
+interactive sessions (which keep manual MCP-server approval). The trust is intentional per
+spawn: the `--project` target is chosen deliberately and the peer is bounded (TTL, depth=1).
+
 ## Admin: enabling the no-flag plugin (`allowedChannelPlugins`)
 
 `allowedChannelPlugins` is **org policy, set server-side ONLY** — read from the remote-fetched
