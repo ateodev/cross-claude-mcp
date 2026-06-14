@@ -64,28 +64,34 @@ natively first-party. Send-only by default; `--listen` loads the channel for rec
 
 ## Admin: enabling the no-flag plugin (`allowedChannelPlugins`)
 
-`allowedChannelPlugins` is **org policy, set server-side** (a local `remote-settings.json`
-edit is overwritten on the next policy fetch — confirmed). The org owner sets it in the
-Claude admin / managed-settings console (same place as the "Channels [Preview]" toggle):
+`allowedChannelPlugins` is **org policy, set server-side ONLY** — read from the remote-fetched
+`policySettings`, NEVER from a local file. A local `managed-settings.json` edit (whether via
+`CLAUDE_CODE_MANAGED_SETTINGS_PATH` or `/Library/Application Support/ClaudeCode/managed-settings.json`)
+is NOT honored — both were tested and ruled out; the banner stays "not on the approved
+channels allowlist". (Binary confirms: settings that ARE file-settable, e.g.
+`strictKnownMarketplaces`, say so explicitly; `allowedChannelPlugins` does not.)
+
+**CONFIRMED WORKING 2026-06-13.** The org owner/admin sets it in the Anthropic admin console:
+
+> **claude.ai → Settings → Organization → Products → Claude Code → "Managed settings
+> (settings.json)" → Manage** — edit the JSON, Save. (Same Claude Code panel that holds the
+> **Channels [Preview]** toggle, which must also be on.)
+
+Paste this exact object (merging with whatever is already there):
 
 ```json
-"allowedChannelPlugins": [
-  { "plugin": "cross-claude", "marketplace": "cross-claude-local" }
-]
+{
+  "channelsEnabled": true,
+  "allowedChannelPlugins": [
+    { "plugin": "cross-claude", "marketplace": "cross-claude-local" }
+  ]
+}
 ```
 
-After it propagates, members relaunch and the plugin channel works with no dev flag.
-
-**CONFIRMED 2026-06-13 (empirical + binary):** `allowedChannelPlugins` is **server-policy
-only** — read from the remote-fetched `policySettings`, NEVER from a local file. Tested and
-ruled out BOTH `CLAUDE_CODE_MANAGED_SETTINGS_PATH` override AND
-`/Library/Application Support/ClaudeCode/managed-settings.json` (neither honored; banner
-stays "not on the approved channels allowlist"). Binary: settings that ARE file-settable
-(e.g. `strictKnownMarketplaces`) say so explicitly; `allowedChannelPlugins` does not. So it
-is strictly the **Anthropic admin console / org policy** (owner/admin only). The console
-field may be Preview-gated — contact Anthropic support if it isn't visible. Until set
-there, use the **dev-flag door** (`--dangerously-load-development-channels server:cross-claude`),
-which is proven working.
+After Save, members **relaunch** CC and the plugin channel works with NO dev flag:
+`claude --channels plugin:cross-claude@cross-claude-local` (under ccx, same flag). R verified
+this end-to-end on 2026-06-13: with the object in the console, the allowlist banner is gone
+and the plugin channel loads clean.
 
 ## Caveats / findings
 
