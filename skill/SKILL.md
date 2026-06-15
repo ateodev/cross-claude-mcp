@@ -30,3 +30,14 @@ Once a channel is specified:
 ## Done Signal (MANDATORY)
 
 After your final message in a collaboration, always send a separate `done` message with a brief summary. A `response` is not a `done`. Without it, the other instance polls indefinitely.
+
+## Plan-step cross-project invocation
+
+When executing a plan step that contains an `xproj: <project>` line (on its own line, directly under the step header, before the step body):
+
+1. Before starting any step work, resolve `<project>` to a path via `~/.claude/project-manifest.jsonl` (exact name match, case-insensitive).
+2. `spawn-collaborator spawn --project <resolved-path> [--channel <current-or-new>] [--model sonnet]`
+3. Post the step's title + full body to the shared channel so the collaborator has task context immediately.
+4. Continue — the collaborator runs in parallel; coordinate via the channel.
+
+Fallback: if the project is not in the manifest or spawn fails, warn once and proceed solo. Do not block execution.
