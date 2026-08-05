@@ -48,7 +48,11 @@ import path from 'node:path';
 
 const POLL_MS  = Number(process.env.CROSS_CLAUDE_POLL_MS) || 20000;
 const FILTER   = (process.env.CROSS_CLAUDE_FILTER || 'participant').trim().toLowerCase();
-const INSTANCE = (process.env.CROSS_CLAUDE_INSTANCE || os.hostname()).trim().toLowerCase();
+// The id belongs to the SESSION that arms this watcher, not to the machine, so it is
+// passed per-run on argv — a launcher script cannot carry a value that differs per
+// session. Falls back to env, then the hostname.
+const argInstance = process.argv.includes('--instance') ? process.argv[process.argv.indexOf('--instance') + 1] : '';
+const INSTANCE = (argInstance || process.env.CROSS_CLAUDE_INSTANCE || os.hostname()).trim().toLowerCase();
 const MAXLEN   = 600;
 const ONCE     = process.argv.includes('--once');
 
@@ -95,13 +99,18 @@ let started = false;      // startup baselining done?
 
 const part = {};  // channel -> true (emit) / false (silent scan); absent = unclassified, retry
 
+// Channel names and instance ids reach the server as URL components, so they are
+// escaped: an id carries a dot-separated session suffix, and an unescaped '#' or '&'
+// would truncate the value silently rather than fail.
+const enc = encodeURIComponent;
+
 async function listChannels() {
   const j = await getJSON(`${BASE}/api/channels`);
   return (j.channels || []).map(c => c.name).filter(Boolean);
 }
 
 async function headOf(ch) {
-  try { const j = await getJSON(`${BASE}/api/messages/${ch}?limit=1`); return j.last_id ?? 0; }
+  try { const j = await getJSON(`${BASE}/api/messages/${enc(ch)}?limit=1`); return j.last_id ?? 0; }
   catch { return 0; }
 }
 
@@ -109,7 +118,7 @@ async function classify(ch) {
   // -> true/false participant verdict, or null on transient error (retry next round).
   if (FILTER !== 'participant' || ch === 'general') return true;
   try {
-    const j = await getJSON(`${BASE}/api/messages/${ch}?limit=500`);
+    const j = await getJSON(`${BASE}/api/messages/${enc(ch)}?limit=500`);
     return (j.messages || []).some(m => m.sender === INSTANCE);
   } catch { return null; }
 }
@@ -145,13 +154,13 @@ async function poll(ch) {
   try {
     if (part[ch]) {
       // participating channel: emit every new peer message (server drops our own)
-      const j = await getJSON(`${BASE}/api/messages/${ch}?after_id=${last[ch]}&instance_id=${INSTANCE}`);
+      const j = await getJSON(`${BASE}/api/messages/${enc(ch)}?after_id=${last[ch]}&instance_id=${enc(INSTANCE)}`);
       const msgs = j.messages || [];
       if (msgs.length) { for (const m of msgs) emit(ch, m); last[ch] = j.last_id ?? last[ch]; }
     } else {
       // silent scan: same poll WITHOUT instance_id so our own sends are visible;
       // our first own message graduates the channel (and emits peers' messages after it)
-      const j = await getJSON(`${BASE}/api/messages/${ch}?after_id=${last[ch]}`);
+      const j = await getJSON(`${BASE}/api/messages/${enc(ch)}?after_id=${last[ch]}`);
       const msgs = j.messages || [];
       const mine = msgs.filter(m => m.sender === INSTANCE).map(m => m.id ?? 0);
       if (mine.length) {

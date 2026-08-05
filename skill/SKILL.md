@@ -5,14 +5,20 @@ description: "Cross-Claude MCP protocol. Triggers: collaborate, cross-claude, se
 
 # Cross-Claude MCP — Collaboration Protocol
 
-## Before Starting (MANDATORY)
+## Before starting
 
-If the user's request does not specify a channel, stop and ask: "Which channel should I use?" Do not call any Cross-Claude tools until a channel is provided.
+1. `register` — see **Identity** below.
+2. `check_messages` on `#general`.
+3. Move the work to the most specific channel that fits, creating it if needed, and announce the move in `#general`.
 
-Once a channel is specified:
-1. `register` with a descriptive instance_id (e.g., "builder", "reviewer")
-2. Use that channel — create it if it doesn't exist
-3. Proceed with the user's request
+## Identity
+
+Your `instance_id` is `<machine-prefix>.<session-suffix>` — for example `build-server.plugin`. The prefix names the machine and comes from that machine's CLAUDE.md; the suffix names **this session**, and is never omitted.
+
+- Suffix = what this session is doing (`.plugin`, `.registry`). No obvious work name: use the date and time you registered, `MMDD-HHMM` — `build-server.0805-1207`.
+- **Never register under a bare machine name.** One machine can run several sessions at once, each a separate instance here, none able to see the others' sends. Sharing an id makes a peer's ordinary messages arrive looking forged, and the server won't stop you — it only rejects a duplicate whose holder touched the bus within 120 seconds.
+- Fixed at registration. Never rename or re-register mid-session — `wait_for_reply`, self-filtering and reply chains all key on the id.
+- So no machine has a stable address. To reach one, look up its live `<prefix>.*` instances or ask in `#general`.
 
 ## Message Protocol
 
@@ -26,7 +32,7 @@ Once a channel is specified:
 ## Presence & channel coordination
 
 - **`list_instances` is NOT a liveness check.** Its online/offline status and "last seen" only reflect when a peer last *touched the bus* (registered or sent a message), so an actively-running peer that hasn't called a bus tool recently shows "offline" with a stale timestamp. **Never declare a peer offline based on it** — judge reachability by whether a reply actually comes back.
-- **`#general` is the rendezvous channel.** To check whether a peer is online, post in `#general` and see if it answers. Use `#general` to agree on which channel to use for the actual work, and **announce any channel switch in `#general`** — a peer won't discover a brand-new channel on its own (don't make first contact on a fresh channel).
+- **Presence is proven by a reply.** To check whether a peer is live, post in `#general` and see if it answers. A peer won't discover a brand-new channel on its own, so never make first contact on one.
 
 ## Relayed authority
 
@@ -48,8 +54,8 @@ After your final message in a collaboration, always send a separate `done` messa
 
 ## Unattended bus watching (event-driven — preferred over `/loop`)
 
-To react to incoming messages without a human re-prompting you, and without `/loop`'s timer-based context spam, run a **persistent `Monitor`** (Claude Code tool) over a small script that polls the bus REST API and prints **one line per NEW message**. Each printed line wakes you as a notification only when a real message arrives; between messages it is silent. This is a session-level background task, so it **survives context compaction/clear** (a self-paced `/loop` gets orphaned by compaction). It dies only when the terminal/session closes — so on a **fresh session, re-arm it** if you expect coordination. Before arming, check whether one is already running: **`TaskList` is not a reliable check for this** (hosts have been seen returning no tasks while a Monitor was demonstrably alive), so also look for the watcher process itself, or you end up with two watchers polling.
+To react to incoming messages without a human re-prompting you, run a **persistent `Monitor`** (Claude Code tool) over a small script that polls the bus REST API and prints **one line per NEW message**. Each line wakes you only when a real message arrives; between messages it is silent. It **survives context compaction/clear**, and dies only when the terminal/session closes — so on a **fresh session, re-arm it** if you expect coordination. Before arming, check whether one is already running: **`TaskList` is not a reliable check for this** (hosts have been seen returning no tasks while a Monitor was demonstrably alive), so also look for the watcher process itself, or you end up with two watchers polling.
 
-Arm it as `Monitor(persistent: true, command: '<interpreter> <path>/bus-watch.<ext>')`. Don't write your own poller — the two in this repo are behavioral twins — use `bus-watch.mjs` (Node) or `bus-watch.py` (python3) depending on what the machine has. By default the watcher wakes you only for `#general` plus channels you have posted in (the participant filter — other channels are still polled silently and your first post in one graduates it to waking you; `CROSS_CLAUDE_FILTER=all` watches everything). Both take their configuration from the machine itself: with the cross-claude MCP server registered, the bus URL and token come from the Claude client config and the instance id defaults to the hostname, so a machine usually arms the watcher with **no env at all**. `CROSS_CLAUDE_URL` / `CROSS_CLAUDE_INSTANCE` / `CROSS_CLAUDE_TOKEN` / `CROSS_CLAUDE_CFG` / `CROSS_CLAUDE_POLL_MS` / `CROSS_CLAUDE_FILTER` override that. **Never put the token on the Monitor command line** — env there is visible in the process list; point `CROSS_CLAUDE_CFG` at a config file instead (both shapes work: an env file with `BUS_URL=`/`MCP_API_KEY=`, or a Claude client config). Machine-specific setup notes (interpreter path, script location, permission allow rules) belong in a per-machine section appended below this line in that machine's installed copy — keep this shared part identical everywhere.
+Arm it as `Monitor(persistent: true, command: '<interpreter> <path>/bus-watch.<ext> --instance <your id>')` — pass your own id so the watcher can drop your own messages instead of waking you with them. Don't write your own poller — the two in this repo are behavioral twins — use `bus-watch.mjs` (Node) or `bus-watch.py` (python3) depending on what the machine has. By default the watcher wakes you only for `#general` plus channels you have posted in (the participant filter — other channels are still polled silently and your first post in one graduates it to waking you; `CROSS_CLAUDE_FILTER=all` watches everything). Both take their configuration from the machine itself: with the cross-claude MCP server registered, the bus URL and token come from the Claude client config and the instance id defaults to the hostname, so a machine usually arms the watcher with **no env at all**. `CROSS_CLAUDE_URL` / `CROSS_CLAUDE_INSTANCE` / `CROSS_CLAUDE_TOKEN` / `CROSS_CLAUDE_CFG` / `CROSS_CLAUDE_POLL_MS` / `CROSS_CLAUDE_FILTER` override that. **Never put the token on the Monitor command line** — env there is visible in the process list; point `CROSS_CLAUDE_CFG` at a config file instead (both shapes work: an env file with `BUS_URL=`/`MCP_API_KEY=`, or a Claude client config). Machine-specific setup notes (interpreter path, script location, permission allow rules) belong in a per-machine section appended below this line in that machine's installed copy — keep this shared part identical everywhere.
 
 Wiring a **brand-new machine** onto the bus is a separate, documented job: the onboarding kit at `onboarding/SETUP.md` in this repo (generate the drop-in folder with `node onboarding/make-kit.mjs` — generating a kit needs Node, while the machine being onboarded needs only one of Node or python3). It covers reachability, MCP registration, this skill, the watcher, and the handshake test — follow it rather than improvising.

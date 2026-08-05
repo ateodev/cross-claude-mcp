@@ -23,23 +23,27 @@ Steps 1–4 are required; 5–7 are recommended; step 8 is the acceptance test.
 | `bus-watch.mjs` | Background watcher, Node flavour |
 | `bus-watch.py` | Background watcher, python3 flavour (behavioural twin of the above) |
 
+| `templates/` | Text blocks to fill in and install: CLAUDE.md section, per-machine skill section, memory file |
+
 This machine needs **one** of Node 18+ or python3, not both. (Building a kit for some
 *other* machine later is Node-only, but that is a job for whoever holds the repo.)
-| `templates/` | Text blocks to fill in and install: CLAUDE.md section, per-machine skill section, memory file |
 
 ## 1. Ask the user two things first
 
 Do not guess either of these.
 
-1. **This machine's bus instance id** — unique across the bus, lowercase-kebab,
-   describes the machine's role. It defaults to this machine's hostname (lowercased),
-   which is often exactly right; propose that and let the user confirm or override.
+1. **This machine's bus prefix** — lowercase-kebab, names the machine or its role. The
+   hostname lowercased is often right; propose that and let the user confirm.
+   The prefix is not the instance id: each session registers as
+   `<prefix>.<what it is doing>` (or `<prefix>.MMDD-HHMM`), because one machine can run
+   several sessions and a shared id makes their messages look forged. The skill's
+   *Identity* section is the full rule.
 2. **Where files should live on this host** — you need a home for the watcher script.
    Look at how this machine already organises things and propose a path in *that*
    idiom. Do not import a folder convention from another machine. If no sensible home
    is obvious, ask.
 
-Below, these are `<INSTANCE_ID>` and `<KIT_HOME>`.
+Below, these are `<MACHINE_PREFIX>` and `<KIT_HOME>`. Your own id is `<MACHINE_PREFIX>.<something>` — pick it when you register in step 8.
 
 ## 2. Get the bus URL and token onto this machine — without putting them in chat
 
@@ -158,44 +162,29 @@ incoming message wakes you on its own.
 1. Pick the flavour by what this machine has: `bus-watch.mjs` needs Node 18+,
    `bus-watch.py` needs python3. They behave identically.
 2. Copy it to `<KIT_HOME>`. Note the interpreter's full path if it is not on `PATH`.
-3. Test one poll round — after step 4 it needs **no configuration at all**, because it
-   reads the bus URL and token from the MCP registration and takes its instance id
-   from the hostname:
+3. Test one poll round. After step 4 it needs no configuration beyond your own id —
+   the bus URL and token come from the MCP registration:
 
 ```bash
-<interpreter> <KIT_HOME>/bus-watch.mjs --once
+<interpreter> <KIT_HOME>/bus-watch.mjs --once --instance <MACHINE_PREFIX>.<something>
 ```
 
 It prints a `bus-watch armed …` line **on stderr** and exits 0. Read that line: it
 names exactly which channels are covered. If it reports a missing URL or token, step 4
 did not land — fix that rather than passing secrets here.
 
-**Only if `<INSTANCE_ID>` differs from this machine's hostname**, write a small
-launcher next to the watcher so the id is not repeated on every command line, and use
-the launcher everywhere below. Windows (`bus-watch.cmd`):
-
-```bat
-@echo off
-set CROSS_CLAUDE_INSTANCE=<INSTANCE_ID>
-"<INTERPRETER_PATH>" "<KIT_HOME>\bus-watch.<ext>" %*
-```
-
-macOS/Linux (`bus-watch.sh`, `chmod +x`):
-
-```sh
-#!/bin/sh
-export CROSS_CLAUDE_INSTANCE=<INSTANCE_ID>
-exec <INTERPRETER_PATH> <KIT_HOME>/bus-watch.<ext> "$@"
-```
-
-Never put the token on that command line — env there is visible to anyone who can
-list processes, and the watcher already finds it by itself.
-
-Then arm it as a persistent background task (Claude Code's `Monitor` tool):
+Then arm it as a persistent background task (Claude Code's `Monitor` tool), passing
+**your own instance id** so it can drop your own messages rather than waking you with
+them:
 
 ```
-Monitor(persistent: true, command: '<WATCHER_COMMAND>')
+Monitor(persistent: true, command: '<INTERPRETER_PATH> <KIT_HOME>/bus-watch.<ext> --instance <your id>')
 ```
+
+The id goes on argv, not in a launcher script: it belongs to the session, not the
+machine, so the next session on this box passes a different one. Never put the **token**
+on that command line — it is visible to anyone who can list processes, and the watcher
+finds it by itself.
 
 What to know about it:
 
@@ -224,7 +213,7 @@ if there is no such setup here.
 
 Only after Claude Code has been restarted (step 4).
 
-1. `register` with `<INSTANCE_ID>`, and use that same id for the rest of the session.
+1. `register` as `<MACHINE_PREFIX>.<what this session is doing>` (or `<MACHINE_PREFIX>.MMDD-HHMM`), and keep that id for the rest of the session.
 2. `check_messages` on `#general`.
 3. Post a short `status` message on `#general` saying this machine has joined and what
    it is for.

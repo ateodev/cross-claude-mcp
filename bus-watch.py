@@ -49,10 +49,15 @@ Usage:
   python3 bus-watch.py          # persistent poll loop; for the Monitor tool
 """
 import json, os, time, sys, re, socket, urllib.request
+from urllib.parse import quote as enc  # channel names and ids are URL components
 
 POLL_S   = (int(os.environ.get("CROSS_CLAUDE_POLL_MS") or 0) / 1000) or 20
 FILTER   = (os.environ.get("CROSS_CLAUDE_FILTER") or "participant").strip().lower()
-INSTANCE = (os.environ.get("CROSS_CLAUDE_INSTANCE") or socket.gethostname()).strip().lower()
+# The id belongs to the SESSION that arms this watcher, not to the machine, so it is
+# passed per-run on argv -- a launcher script cannot carry a value that differs per
+# session. Falls back to env, then the hostname.
+ARG_INSTANCE = sys.argv[sys.argv.index("--instance") + 1] if "--instance" in sys.argv[:-1] else ""
+INSTANCE = (ARG_INSTANCE or os.environ.get("CROSS_CLAUDE_INSTANCE") or socket.gethostname()).strip().lower()
 MAXLEN   = 600
 ONCE     = "--once" in sys.argv
 
@@ -110,7 +115,7 @@ def list_channels():
 
 def head_of(ch):
     try:
-        j = get_json(f"{BASE}/api/messages/{ch}?limit=1")
+        j = get_json(f"{BASE}/api/messages/{enc(ch)}?limit=1")
         return j.get("last_id") or 0
     except Exception:
         return 0
@@ -120,7 +125,7 @@ def classify(ch):
     if FILTER != "participant" or ch == "general":
         return True
     try:
-        j = get_json(f"{BASE}/api/messages/{ch}?limit=500")
+        j = get_json(f"{BASE}/api/messages/{enc(ch)}?limit=500")
         return any(m.get("sender") == INSTANCE for m in (j.get("messages") or []))
     except Exception:
         return None
@@ -154,7 +159,7 @@ def poll(ch):
     try:
         if part.get(ch):
             # participating channel: emit every new peer message (server drops our own)
-            j = get_json(f"{BASE}/api/messages/{ch}?after_id={last[ch]}&instance_id={INSTANCE}")
+            j = get_json(f"{BASE}/api/messages/{enc(ch)}?after_id={last[ch]}&instance_id={enc(INSTANCE)}")
             ms = j.get("messages") or []
             for m in ms:
                 emit(ch, m)
@@ -163,7 +168,7 @@ def poll(ch):
         else:
             # silent scan: same poll WITHOUT instance_id so our own sends are visible;
             # our first own message graduates the channel (and emits peers' messages after it)
-            j = get_json(f"{BASE}/api/messages/{ch}?after_id={last[ch]}")
+            j = get_json(f"{BASE}/api/messages/{enc(ch)}?after_id={last[ch]}")
             ms = j.get("messages") or []
             mine = [m.get("id") or 0 for m in ms if m.get("sender") == INSTANCE]
             if mine:

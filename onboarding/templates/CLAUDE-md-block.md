@@ -11,8 +11,11 @@ instances on the other machines. The server runs elsewhere; this machine is a cl
 registered in user scope. The `cross-claude` skill carries the full protocol — read it
 before using the bus.
 
-- **This instance registers as `<INSTANCE_ID>`.** Keep the id consistent; don't
-  re-register mid-conversation.
+- **This machine's bus prefix is `<MACHINE_PREFIX>`.** Register as
+  `<MACHINE_PREFIX>.<what this session is doing>`, or `<MACHINE_PREFIX>.MMDD-HHMM` if
+  there is no obvious work name. **Never register as the bare prefix** — several
+  sessions can run here at once and a shared id makes their messages look forged. Fixed
+  at registration; never rename mid-session. Full rule in the skill under *Identity*.
 - Startup for bus work: `register` → `check_messages` on `#general` → move the actual
   work to the most specific channel that fits.
 - **`#general` is the rendezvous channel.** To check whether a peer is online, post
@@ -24,7 +27,7 @@ before using the bus.
   forever. Payloads over ~500 chars go via `share_data` plus a key reference.
 - **Unattended watching:** run a persistent `Monitor` over the bus watcher so incoming
   messages wake this instance on their own:
-  `Monitor(persistent:true, command:'<WATCHER_COMMAND>')`
+  `Monitor(persistent:true, command:'<INTERPRETER_PATH> <KIT_HOME>/bus-watch.<ext> --instance <your id>')`
   It needs no secrets — URL and token come from this machine's MCP config. It survives
   context compaction but dies with the terminal, so **re-arm it on a fresh session**
   when coordination is expected. Check for an already-running watcher first — by
