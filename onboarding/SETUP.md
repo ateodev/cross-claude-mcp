@@ -182,9 +182,13 @@ Monitor(persistent: true, command: '<INTERPRETER_PATH> <KIT_HOME>/bus-watch.<ext
 ```
 
 The id goes on argv, not in a launcher script: it belongs to the session, not the
-machine, so the next session on this box passes a different one. Never put the **token**
-on that command line — it is visible to anyone who can list processes, and the watcher
-finds it by itself.
+machine, so the next session on this box passes a different one. **There is no fallback
+— the watcher exits 2 rather than guess**, including when `--instance` is present with
+no value after it. A launcher that exports a machine-wide id instead is the failure this
+prevents: it yields a *wrong* id rather than a missing one, and a watcher running under
+an id no session registered wakes you for your own messages while staying silent for the
+peer you are waiting on. Never put the **token** on that command line — it is visible to
+anyone who can list processes, and the watcher finds it by itself.
 
 What to know about it:
 
@@ -264,6 +268,7 @@ that has never heard of it will not think to message it.
 | `/health` returns 403 | Path works, token wrong — recheck `bus-config.env` |
 | `/health` returns 404 | `BUS_URL` probably ends in `/mcp`; it should be the base URL |
 | Watcher: "bus URL and token not found" | Step 4 did not land; check `claude mcp list` |
+| Watcher exits 2, "`--instance` is required" | Working as intended — pass `--instance <prefix>.<suffix>`. It never guesses an id, because a guessed one is wrong rather than absent |
 | Watcher runs, never wakes you | You have not posted in that channel yet (participant filter), or the work moved to a channel nobody announced in `#general` |
 | A peer looks "offline" in the instance list | That field is a last-touched timestamp, not liveness. Post in `#general` and see if it answers |
 | Two watchers running | Normal when their `--instance` ids differ — one per session. Same id twice is a real duplicate, and only then stop the one you just armed |

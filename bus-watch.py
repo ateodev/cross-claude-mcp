@@ -9,10 +9,9 @@ session. Use this on machines without Node; bus-watch.mjs is the Node twin.
 Keep the two implementations behaviorally identical.
 
 Configuration -- all env vars are optional on a machine that has the cross-claude
-MCP server configured, because the bus URL and token are read from that config:
+MCP server configured, because the bus URL and token are read from that config.
+The instance id is the exception: it is REQUIRED on argv, see below.
   CROSS_CLAUDE_URL      bus base URL (overrides the configured one)
-  CROSS_CLAUDE_INSTANCE this machine's bus instance id, used to skip messages
-                        from self; defaults to the hostname, lowercased
   CROSS_CLAUDE_TOKEN    bearer token -- prefer a config file, since env on a
                         command line is visible in the process list
   CROSS_CLAUDE_CFG      config file, in either shape: a Claude client config (the
@@ -45,19 +44,31 @@ exactly what makes it wake you afterwards. Set CROSS_CLAUDE_FILTER=all for the
 old watch-everything behavior.
 
 Usage:
-  python3 bus-watch.py --once   # baseline + one poll, armed line on stderr, exit 0 (connectivity test)
-  python3 bus-watch.py          # persistent poll loop; for the Monitor tool
+  python3 bus-watch.py --instance <prefix>.<suffix> --once   # baseline + one poll, armed line on stderr, exit 0 (connectivity test)
+  python3 bus-watch.py --instance <prefix>.<suffix>          # persistent poll loop; for the Monitor tool
 """
-import json, os, time, sys, re, socket, urllib.request
+import json, os, time, sys, re, urllib.request
 from urllib.parse import quote as enc  # channel names and ids are URL components
 
 POLL_S   = (int(os.environ.get("CROSS_CLAUDE_POLL_MS") or 0) / 1000) or 20
 FILTER   = (os.environ.get("CROSS_CLAUDE_FILTER") or "participant").strip().lower()
-# The id belongs to the SESSION that arms this watcher, not to the machine, so it is
-# passed per-run on argv -- a launcher script cannot carry a value that differs per
-# session. Falls back to env, then the hostname.
+# The id belongs to the SESSION that arms this watcher, not to the machine, so it MUST
+# arrive on argv: a launcher or an env var cannot carry a value that differs per session.
+# There is deliberately NO fallback. Every implicit source yields a WRONG id rather than a
+# missing one -- an env var holds a machine-wide name, and the hostname is either the bare
+# machine prefix (an id the protocol forbids) or a name no session ever registered, e.g. an
+# mDNS `*.local`. Both look plausible, and the failure is silent in the worst direction: an
+# unregistered id matches nothing in the self-filter, so the watcher wakes you for your OWN
+# messages, while the participant filter finds no channel that id has posted in, so it stays
+# quiet for the peer you are waiting on. That is indistinguishable from a quiet bus.
+# Assert the value was passed rather than checking its shape: a shape check cannot tell a
+# deliberate id from a hostname that happens to look like one. The sys.argv[:-1] slice is
+# what makes a trailing "--instance" with no value fail here instead of falling through.
 ARG_INSTANCE = sys.argv[sys.argv.index("--instance") + 1] if "--instance" in sys.argv[:-1] else ""
-INSTANCE = (ARG_INSTANCE or os.environ.get("CROSS_CLAUDE_INSTANCE") or socket.gethostname()).strip().lower()
+INSTANCE = ARG_INSTANCE.strip().lower()
+if not INSTANCE or INSTANCE.startswith("--"):
+    sys.stderr.write("bus-watch: --instance <prefix>.<suffix> is required (the id belongs to this session, not the machine).\n")
+    sys.exit(2)
 MAXLEN   = 600
 ONCE     = "--once" in sys.argv
 

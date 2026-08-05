@@ -4,14 +4,13 @@
 // event/notification, so the main loop is woken ONLY when a real message
 // arrives — no fixed-interval chat spam. Between messages it polls quietly in
 // the background. Re-arm with:
-//   Monitor(persistent:true, command:'node /path/to/bus-watch.mjs')
+//   Monitor(persistent:true, command:'node /path/to/bus-watch.mjs --instance <prefix>.<suffix>')
 // Use `--once` for a single poll round (testing).
 //
 // Configuration — all env vars are optional on a machine that has the cross-claude
-// MCP server configured, because the bus URL and token are read from that config:
+// MCP server configured, because the bus URL and token are read from that config.
+// The instance id is the exception: it is REQUIRED on argv, see below.
 //   CROSS_CLAUDE_URL      bus base URL (overrides the configured one)
-//   CROSS_CLAUDE_INSTANCE this machine's bus instance id, used to skip messages from
-//                         self; defaults to the hostname, lowercased
 //   CROSS_CLAUDE_TOKEN    bearer token — prefer a config file, since env on a command
 //                         line is visible in the process list
 //   CROSS_CLAUDE_CFG      config file, in either shape: a Claude client config (the
@@ -48,11 +47,23 @@ import path from 'node:path';
 
 const POLL_MS  = Number(process.env.CROSS_CLAUDE_POLL_MS) || 20000;
 const FILTER   = (process.env.CROSS_CLAUDE_FILTER || 'participant').trim().toLowerCase();
-// The id belongs to the SESSION that arms this watcher, not to the machine, so it is
-// passed per-run on argv — a launcher script cannot carry a value that differs per
-// session. Falls back to env, then the hostname.
-const argInstance = process.argv.includes('--instance') ? process.argv[process.argv.indexOf('--instance') + 1] : '';
-const INSTANCE = (argInstance || process.env.CROSS_CLAUDE_INSTANCE || os.hostname()).trim().toLowerCase();
+// The id belongs to the SESSION that arms this watcher, not to the machine, so it MUST
+// arrive on argv: a launcher or an env var cannot carry a value that differs per session.
+// There is deliberately NO fallback. Every implicit source yields a WRONG id rather than a
+// missing one — an env var holds a machine-wide name, and the hostname is either the bare
+// machine prefix (an id the protocol forbids) or a name no session ever registered, e.g. an
+// mDNS `*.local`. Both look plausible, and the failure is silent in the worst direction: an
+// unregistered id matches nothing in the self-filter, so the watcher wakes you for your OWN
+// messages, while the participant filter finds no channel that id has posted in, so it stays
+// quiet for the peer you are waiting on. That is indistinguishable from a quiet bus.
+// Assert the value was passed rather than checking its shape: a shape check cannot tell a
+// deliberate id from a hostname that happens to look like one.
+const instanceAt = process.argv.indexOf('--instance');
+const INSTANCE   = (instanceAt >= 0 ? (process.argv[instanceAt + 1] || '') : '').trim().toLowerCase();
+if (!INSTANCE || INSTANCE.startsWith('--')) {
+  console.error('bus-watch: --instance <prefix>.<suffix> is required (the id belongs to this session, not the machine).');
+  process.exit(2);
+}
 const MAXLEN   = 600;
 const ONCE     = process.argv.includes('--once');
 
