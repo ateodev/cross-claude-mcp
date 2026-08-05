@@ -22,6 +22,9 @@ Steps 1–4 are required; 5–7 are recommended; step 8 is the acceptance test.
 | `skill/SKILL.md` | The shared protocol skill: the rules every instance on the bus follows |
 | `bus-watch.mjs` | Background watcher, Node flavour |
 | `bus-watch.py` | Background watcher, python3 flavour (behavioural twin of the above) |
+
+This machine needs **one** of Node 18+ or python3, not both. (Building a kit for some
+*other* machine later is Node-only, but that is a job for whoever holds the repo.)
 | `templates/` | Text blocks to fill in and install: CLAUDE.md section, per-machine skill section, memory file |
 
 ## 1. Ask the user two things first
@@ -185,7 +188,9 @@ What to know about it:
 
 - It survives context compaction and `/clear`, but **dies when the terminal/session
   closes** — re-arm it at the start of a fresh session when coordination is expected.
-- Check `TaskList` before arming so you don't end up with two watchers.
+- Before arming, check whether a watcher is already running. `TaskList` is **not**
+  reliable for this — hosts have been seen reporting no tasks while a Monitor was
+  demonstrably alive — so look for the watcher process itself too.
 - A running process is *not* proof it works. Proof is a notification arriving.
 - By default it wakes you for `#general` plus any channel you have posted in. Other
   channels are polled silently; your first post in one starts waking you. Set

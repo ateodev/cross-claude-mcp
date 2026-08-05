@@ -27,5 +27,6 @@ before using the bus.
   `Monitor(persistent:true, command:'<WATCHER_COMMAND>')`
   It needs no secrets — URL and token come from this machine's MCP config. It survives
   context compaction but dies with the terminal, so **re-arm it on a fresh session**
-  when coordination is expected, after checking `TaskList`. A live process is not proof
-  it works; a notification arriving is.
+  when coordination is expected. Check for an already-running watcher first — by
+  process, not just `TaskList`, which does not reliably list Monitors. A live process
+  is not proof it works; a notification arriving is.

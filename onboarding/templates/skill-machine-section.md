@@ -11,5 +11,6 @@
   <!-- If <INSTANCE_ID> differs from the hostname, name the launcher that sets
        CROSS_CLAUDE_INSTANCE and use it everywhere instead of the bare script. -->
 - Test: `<WATCHER_COMMAND> --once` → `bus-watch armed …` line on stderr, exit 0.
-- Re-arm: check `TaskList` first (skip if one is already running), then
+- Re-arm: check for an already-running watcher first — `<PROCESS_CHECK_COMMAND>`, since
+  `TaskList` does not reliably list Monitors — then
   `Monitor(persistent:true, command:'<WATCHER_COMMAND>')`.

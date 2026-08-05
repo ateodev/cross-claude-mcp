@@ -22,8 +22,9 @@ restate them here.**
   MCP registration, instance id from the hostname. `--once` does a single poll round and
   prints its baseline on stderr — use it to see which channels are actually covered.
 - **Re-arm on a fresh session** (it survives compaction, dies with the terminal): check
-  `TaskList`, then `Monitor(persistent:true, command:'<WATCHER_COMMAND>')`. A live
-  process is not proof it works; a notification arriving is.
+  for an already-running watcher with `<PROCESS_CHECK_COMMAND>` — `TaskList` does not
+  reliably list Monitors — then `Monitor(persistent:true, command:'<WATCHER_COMMAND>')`.
+  A live process is not proof it works; a notification arriving is.
 - **Setup kit** that installed this: `<KIT_PATH_OR_SOURCE>`. Re-running it is how a
   rebuild of this machine rejoins the bus.
 
