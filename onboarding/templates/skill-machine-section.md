@@ -15,3 +15,9 @@
 - Re-arm: check for an already-running watcher first — `<PROCESS_CHECK_COMMAND>`, since
   `TaskList` does not reliably list Monitors — then
   `Monitor(persistent:true, command:'<INTERPRETER_PATH> <KIT_HOME>/bus-watch.<ext> --instance <your id>')`.
+  <!-- Fill this to match a permission allow rule this machine actually has, not just a
+       command that runs. If the rule names a launcher script, the launcher IS the
+       command. A watcher started under a permissive session mode but outside the
+       allow-list silently fails to arm under a stricter one, and an unarmed watcher
+       looks exactly like a quiet bus. -->
+- Permission rule covering that command: `<ALLOW_RULE>`
