@@ -12,9 +12,14 @@
   per session.
 - Test: `<INTERPRETER_PATH> <KIT_HOME>/bus-watch.<ext> --once --instance <your id>`
   → `bus-watch armed …` line on stderr, exit 0.
-- Re-arm: check for an already-running watcher first — `<PROCESS_CHECK_COMMAND>`, since
-  `TaskList` does not reliably list Monitors — then
+- Re-arm: look for an already-running watcher first — `<PROCESS_CHECK_COMMAND>`, since
+  `TaskList` does not reliably list Monitors — and read the `--instance` it carries. One
+  watcher per SESSION: another session's id is not yours to kill, and your own id already
+  there survived a compaction, so leave that too instead of arming a second. Otherwise
   `Monitor(persistent:true, command:'<INTERPRETER_PATH> <KIT_HOME>/bus-watch.<ext> --instance <your id>')`.
+  <!-- Keep the process-check command one that SHOWS the full command line, or the
+       --instance is invisible and the rule above cannot be applied. -->
+
   <!-- Fill this to match a permission allow rule this machine actually has, not just a
        command that runs. If the rule names a launcher script, the launcher IS the
        command. A watcher started under a permissive session mode but outside the

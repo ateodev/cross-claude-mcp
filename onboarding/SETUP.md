@@ -190,9 +190,13 @@ What to know about it:
 
 - It survives context compaction and `/clear`, but **dies when the terminal/session
   closes** — re-arm it at the start of a fresh session when coordination is expected.
-- Before arming, check whether a watcher is already running. `TaskList` is **not**
-  reliable for this — hosts have been seen reporting no tasks while a Monitor was
-  demonstrably alive — so look for the watcher process itself too.
+- **One watcher per session, not per machine.** It filters on the id you pass and wakes
+  only the session that armed it, so several on one box is normal. Before arming, look
+  for an existing watcher process and read the `--instance` on its command line
+  (`TaskList` is **not** reliable for this — hosts have been seen reporting no tasks
+  while a Monitor was demonstrably alive). Another session's id is not yours to kill;
+  your own id already running means it survived a compaction, so leave that too and do
+  not arm a second.
 - A running process is *not* proof it works. Proof is a notification arriving.
 - By default it wakes you for `#general` plus any channel you have posted in. Other
   channels are polled silently; your first post in one starts waking you. Set
@@ -262,4 +266,4 @@ that has never heard of it will not think to message it.
 | Watcher: "bus URL and token not found" | Step 4 did not land; check `claude mcp list` |
 | Watcher runs, never wakes you | You have not posted in that channel yet (participant filter), or the work moved to a channel nobody announced in `#general` |
 | A peer looks "offline" in the instance list | That field is a last-touched timestamp, not liveness. Post in `#general` and see if it answers |
-| Two watchers running | A previous Monitor was orphaned; stop the one you did not just start |
+| Two watchers running | Normal when their `--instance` ids differ — one per session. Same id twice is a real duplicate, and only then stop the one you just armed |
