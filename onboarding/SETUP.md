@@ -52,6 +52,10 @@ Ask the user to do this themselves, in an editor:
 > Copy `bus-config.env.example` to `bus-config.env` in this folder and fill in
 > `BUS_URL` and `MCP_API_KEY`. Tell me when it's saved.
 
+If this kit is sitting inside a git clone, prefer putting that file **outside** the
+clone and pointing at it — the repo ignores the filename, but a token is safest where
+no `git add` can reach it at all.
+
 Then load it into your shell **without displaying it**. bash:
 
 ```bash

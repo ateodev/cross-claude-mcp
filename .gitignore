@@ -9,7 +9,15 @@ __pycache__/
 saas/
 SESSION-STATUS.md
 
-service-config.env
 logs/
 DEPLOYMENT.md
 dist/
+
+# Never commit a machine's own config: any *.env carries connection details and
+# credentials (this server's service-config.env, or the bus-config.env the
+# onboarding kit has each machine create), and a launcher carries an instance id
+# and local paths. Bare patterns match at any depth, because a kit may sit inside
+# a clone. The tracked template bus-config.env.example deliberately does not match.
+*.env
+bus-watch.cmd
+bus-watch.sh
