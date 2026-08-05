@@ -83,6 +83,10 @@ Get-Content .\bus-config.env | Where-Object { $_ -match '^[A-Z_]+=' } | ForEach-
 - If the user pastes the token into the chat anyway, say plainly that it should be
   rotated, and carry on.
 
+**This file is temporary.** It exists for the two steps below that need the raw token;
+once that token reaches the machine's MCP registration, nothing reads the file again
+and step 9 deletes it. Don't build anything on top of it.
+
 ## 3. Preflight — can this machine even reach the bus?
 
 Run this before changing any config:
@@ -233,7 +237,23 @@ plainly rather than declaring a peer offline.
 
 When you finish a conversation on the bus, send a `done` message. Always.
 
-## 9. Report back
+## 9. Delete the credentials file
+
+The token now lives in this machine's MCP registration, which is where both the bus
+tools and the watcher read it from — so `bus-config.env` has no remaining consumer.
+Leaving it behind is a credential nobody will use again and anybody could leak.
+
+Delete it, and close the shell that has `MCP_API_KEY` set (or unset it).
+
+Prove the machine still works rather than assuming: run the watcher's `--once` again
+afterwards. It must still print its armed line, because it reads the MCP config and
+never needed the file.
+
+Keep the file only in the rare fallback case where this machine has **no** MCP
+registration and the watcher runs from `CROSS_CLAUDE_CFG` pointing at it. If you took
+the normal path above, delete it — and say in your report that you did.
+
+## 10. Report back
 
 Tell the user, in plain language: the instance id this machine now uses; where the
 watcher lives and whether it is armed; which files you created or edited; and anything
