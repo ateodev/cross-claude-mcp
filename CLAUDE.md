@@ -45,6 +45,10 @@ database and no open ports.
   must never live inside this working tree — not even ignored, since an ignore rule is one
   `git add -f` away from not applying. `main` was history-rewritten and force-pushed on
   2026-08-05 to strip such data; treat a rewrite as possible when pulling.
+  The same rule covers anything merely true of ONE clone — which remotes it has, where it
+  sits on disk: state what holds on every machine, or how to check. Confirming such a
+  claim against the clone in front of you is not a check; it is the sample that produced
+  the error.
 - `skill/SKILL.md` above the per-machine section is shared protocol — it must stay
   byte-identical on every machine, so changing it is a change for the whole fleet and gets
   announced, never edited locally on one box.
