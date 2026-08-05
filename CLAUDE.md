@@ -5,8 +5,12 @@
 ## Architecture
 
 This repo is `ateodev/cross-claude-mcp`, Ateo's fork of `rblank9/cross-claude-mcp` — MIT
-licensed. `origin` is the fork and there is no upstream remote configured, so a plain
-`git push` never reaches the original author.
+licensed. `origin` is the fork, so a plain `git push` never reaches the original author.
+**Check `git remote -v` rather than assuming**: some clones also configure an `upstream`
+remote pointing at the original. It carries newer third-party changes to the server that
+this fork has NOT merged, so pulling from it swaps running code for untested code —
+a deliberate merge-and-test step, never part of a routine sync. A clone that is also a
+deployed server's checkout is exactly where that mistake is expensive.
 
 - `server.mjs` — Entry point (stdio + HTTP modes)
 - `db.mjs` — SQLite (local) / PostgreSQL (remote) abstraction
