@@ -49,12 +49,17 @@ be rotated.
 
 Ask the user to do this themselves, in an editor:
 
-> Copy `bus-config.env.example` to `bus-config.env` in this folder and fill in
-> `BUS_URL` and `MCP_API_KEY`. Tell me when it's saved.
+> Copy `bus-config.env.example` to `bus-config.env`, fill in `BUS_URL` and
+> `MCP_API_KEY`, and save it. Tell me the path when it's done.
 
-If this kit is sitting inside a git clone, prefer putting that file **outside** the
-clone and pointing at it — the repo ignores the filename, but a token is safest where
-no `git add` can reach it at all.
+**The filled-in file must not live inside a git working tree — no exceptions, and do
+not offer it as a choice.** Check before accepting a location: `git rev-parse
+--is-inside-work-tree` run from that directory must fail or say `false`. If the kit
+folder is itself inside a clone, have the file go somewhere outside it (the user's
+home directory is fine) and use `CROSS_CLAUDE_CFG` to point at it. The repo does
+ignore the filename, but ignore rules are one `git add -f` or one edited `.gitignore`
+away from not applying, and this file holds a live credential for a bus that other
+machines trust.
 
 Then load it into your shell **without displaying it**. bash:
 
