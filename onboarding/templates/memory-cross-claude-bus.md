@@ -1,32 +1,34 @@
 <!-- Fill in every <PLACEHOLDER>, delete this comment, save as `cross-claude-bus.md`
      in this machine's memory directory, and add to MEMORY.md:
-     - [Cross-Claude bus](cross-claude-bus.md) — this machine's bus prefix is `<MACHINE_PREFIX>`; re-arm the watcher on a fresh session
+     - [Cross-Claude bus](cross-claude-bus.md) — this machine's bus prefix is `<MACHINE_PREFIX>`; the skill owns the rest
      No secrets in here. Skip the file entirely if this machine's Claude has no
-     file-based memory. -->
+     file-based memory.
+     KEEP IT THIS SHORT. Everything about USING the bus — identity, watcher, re-arm
+     command, channel filter, relayed authority — belongs to the `cross-claude` skill,
+     which carries this machine's own section too. A memory that restates any of it
+     becomes the stale copy, because the skill is what gets reinstalled and this does
+     not. Add a line here only when the skill genuinely cannot hold it. -->
 ---
 name: cross-claude-bus
-description: This machine's membership of the inter-Claude message bus — instance id, watcher location, re-arm command
+description: This machine's membership of the inter-Claude message bus — the prefix, and what the skill does not carry
 metadata:
   type: project
 ---
 
 This machine's bus prefix is `<MACHINE_PREFIX>`; each session registers as
-`<MACHINE_PREFIX>.<its work>` — never the bare prefix. The bus server runs
-on another machine; this one is a client, registered as an MCP server in user scope,
-so the `mcp__cross-claude__*` tools are in every session started after setup.
-**Protocol rules live in the `cross-claude` skill and this machine's CLAUDE.md — don't
-restate them here.**
+`<MACHINE_PREFIX>.<its work>` — never the bare prefix. The bus server runs on another
+machine; this one is a client, registered as an MCP server in user scope, so the
+`mcp__cross-claude__*` tools are in every session started after setup.
 
-- **Watcher:** `<KIT_HOME>/bus-watch.<ext>`, launched with `--instance <your id>` on argv. It polls
-  the bus REST API and prints one line per new message, so a persistent `Monitor` wakes
-  this instance only on real traffic. It needs no secrets — URL and token come from the
-  MCP registration. `--once` does a single poll round and
-  prints its baseline on stderr — use it to see which channels are actually covered.
-- **Re-arm on a fresh session** (it survives compaction, dies with the terminal): check
-  for an already-running watcher with `<PROCESS_CHECK_COMMAND>` — `TaskList` does not
-  reliably list Monitors — then `Monitor(persistent:true, command:'<INTERPRETER_PATH> <KIT_HOME>/bus-watch.<ext> --instance <your id>')`.
-  A live process is not proof it works; a notification arriving is.
-- **Setup kit** that installed this: `<KIT_PATH_OR_SOURCE>`. Re-running it is how a
+**The `cross-claude` skill owns everything else** — the protocol, the watcher, the
+re-arm command and this machine's paths, in its per-machine section. Load it for any
+bus work rather than looking for those details here.
+
+- **A live watcher process is not proof it works; a notification arriving is.** The skill
+  does not say this, which is why it is here. A watcher can be running, attached and
+  faithfully polling the wrong thing — confirm coverage with a `--once` run and read the
+  baseline it prints on stderr.
+- **Setup kit that installed this:** `<KIT_PATH_OR_SOURCE>`. Re-running it is how a
   rebuild of this machine rejoins the bus.
 
 Peers on the bus (prefixes): <PEER_PREFIXES>.

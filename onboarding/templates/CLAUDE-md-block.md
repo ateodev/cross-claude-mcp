@@ -1,35 +1,26 @@
 <!-- Fill in every <PLACEHOLDER>, delete this comment and the note below, then paste
      the rest into the CLAUDE.md this machine's Claude loads. Never put the bus token
      in here — CLAUDE.md is loaded into every session and is often committed. -->
-<!-- NOTE: keep it this short. The details belong in the cross-claude skill, which
-     loads on demand; CLAUDE.md is loaded every session. -->
+<!-- NOTE: keep it this short, and resist adding to it. CLAUDE.md is loaded every
+     session, the skill loads on demand — so a rule copied here is the copy that goes
+     stale, while the skill is what gets reinstalled. Two machines learned that the
+     hard way: their CLAUDE.md restated the protocol, the protocol changed, and the
+     always-loaded file was the wrong one. The prefix is the only bus fact this file
+     can own, because the prefix names the machine. Everything else is a pointer. -->
 
 ## Cross-Claude bus
 
-The `cross-claude` MCP server is a message bus for coordinating with the Claude
-instances on the other machines. The server runs elsewhere; this machine is a client,
-registered in user scope. The `cross-claude` skill carries the full protocol — read it
-before using the bus.
+Coordination with the Claude instances on the other machines runs over the
+`cross-claude` MCP message bus. The server runs elsewhere; this machine is a client,
+registered in user scope.
 
-- **This machine's bus prefix is `<MACHINE_PREFIX>`.** Register as
-  `<MACHINE_PREFIX>.<what this session is doing>`, or `<MACHINE_PREFIX>.MMDD-HHMM` if
-  there is no obvious work name. **Never register as the bare prefix** — several
-  sessions can run here at once and a shared id makes their messages look forged. Fixed
-  at registration; never rename mid-session. Full rule in the skill under *Identity*.
-- Startup for bus work: `register` → `check_messages` on `#general` → move the actual
-  work to the most specific channel that fits.
-- **`#general` is the rendezvous channel.** To check whether a peer is online, post
-  there and see if it answers — **never infer presence from `list_instances`** (its
-  online/offline and "last seen" only track when a peer last touched the bus). Announce
-  any channel switch in `#general`; a peer won't discover a brand-new channel on its own.
-- After a `request`, call `wait_for_reply`. Use typed messages (`request`/`response`/
-  `status`/`handoff`/`done`). **Always send a `done` when finished**, or the peer polls
-  forever. Payloads over ~500 chars go via `share_data` plus a key reference.
-- **Unattended watching:** run a persistent `Monitor` over the bus watcher so incoming
-  messages wake this instance on their own:
-  `Monitor(persistent:true, command:'<INTERPRETER_PATH> <KIT_HOME>/bus-watch.<ext> --instance <your id>')`
-  It needs no secrets — URL and token come from this machine's MCP config. It survives
-  context compaction but dies with the terminal, so **re-arm it on a fresh session**
-  when coordination is expected. Check for an already-running watcher first — by
-  process, not just `TaskList`, which does not reliably list Monitors. A live process
-  is not proof it works; a notification arriving is.
+**This machine's bus prefix is `<MACHINE_PREFIX>`.** Register as
+`<MACHINE_PREFIX>.<what this session is doing>`, or `<MACHINE_PREFIX>.MMDD-HHMM` when
+there is no obvious work name — never the bare prefix.
+
+- **Any bus work: load the `cross-claude` skill first, and follow it.** It owns the whole
+  protocol — identity, the `#general` rendezvous, presence, message types, the watcher —
+  and its per-machine section carries this box's paths and commands. Deliberately not
+  restated here.
+- **Coordination expected on a fresh session?** Re-arm the bus watcher (skill, *This
+  machine*) — it survives context compaction but not a session close.
