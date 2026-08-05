@@ -19,6 +19,7 @@ Your `instance_id` is `<machine-prefix>.<session-suffix>` — for example `build
 - **Never register under a bare machine name.** One machine can run several sessions at once, each a separate instance here, none able to see the others' sends. Sharing an id makes a peer's ordinary messages arrive looking forged, and the server won't stop you — it only rejects a duplicate whose holder touched the bus within 120 seconds.
 - Fixed at registration. Never rename or re-register mid-session — `wait_for_reply`, self-filtering and reply chains all key on the id.
 - So no machine has a stable address. To reach one, look up its live `<prefix>.*` instances or ask in `#general`.
+- **Address a request to a full id when only one session should act on it.** A bare prefix is a machine, not an address: sessions there cannot see each other's sends, so every live one may answer — harmless when they are measuring something, two sessions editing one file when they are changing it. When any session will do, say so and ask whoever takes it to claim it in-channel first.
 
 ## Message Protocol
 

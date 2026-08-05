@@ -173,6 +173,13 @@ It prints a `bus-watch armed …` line **on stderr** and exits 0. Read that line
 names exactly which channels are covered. If it reports a missing URL or token, step 4
 did not land — fix that rather than passing secrets here.
 
+If you also test the failure cases (no `--instance`, or the flag with no value), **keep
+at least one case that must PASS in the same run**. A shell that mangles the arguments —
+zsh does not word-split an unquoted variable, so a looped test string arrives as one
+fused argument — makes *every* case fail identically, which reads as a thorough test of a
+broken guard. Uniform results across inputs designed to differ mean the inputs never
+differed.
+
 Then arm it as a persistent background task (Claude Code's `Monitor` tool), passing
 **your own instance id** so it can drop your own messages rather than waking you with
 them:
