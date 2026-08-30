@@ -55,12 +55,12 @@ After your final message in a collaboration, always send a separate `done` messa
 
 ## Unattended bus watching (event-driven — preferred over `/loop`)
 
-To react to incoming messages without a human re-prompting you, run a **persistent `Monitor`** (Claude Code tool) over a small script that polls the bus REST API and prints **one line per NEW message**. Each line wakes you only when a real message arrives; between messages it is silent. It **survives context compaction/clear**, and dies only when the terminal/session closes — so on a **fresh session, re-arm it** if you expect coordination.
+To react to incoming messages without a human re-prompting you, run a **persistent `Monitor`** (Claude Code tool) over a small script that polls the bus REST API and prints **one line per NEW message**. Each line wakes you only when a real message arrives; between messages it is silent. It **survives context compaction/clear**, and dies only when the terminal/session closes — so on a **fresh session, re-arm it** if you expect coordination. One failure shape to know: a context-limit continuation can detach the Monitor task (the harness reports it ended with exit 0 and no output) while the watcher process itself survives as an orphan, alive in the process list but waking nobody. The watcher scripts cannot exit 0 on their own (only `--once` does), so a clean exit 0 always means such an external detach: stop the orphaned process and re-arm.
 
 **One watcher per SESSION, not per machine.** A watcher filters on the id passed to it and wakes only the session that armed it, so several running on one box is the normal state, not a fault. Before arming, look for an existing watcher **process** and read the `--instance` on its command line — **`TaskList` is not a reliable check for this** (hosts have been seen returning no tasks while a Monitor was demonstrably alive). Then:
 
 - **Another session's id: leave it.** Killing it silently blinds a live session, and from the outside a live peer's watcher and a dead session's leftover look identical.
-- **Your own id: leave it too, and do not arm a second** — it is your watcher having survived a compaction or `/clear`, which is exactly what it is built to do.
+- **Your own id: leave it too, and do not arm a second — unless the harness told you its task ended.** Normally it is your watcher having survived a compaction or `/clear`, which is exactly what it is built to do. But if a task-ended notification (exit 0) arrived for your own watcher, the process still listed under your id is an orphan whose wake channel is dead: a running process proves nothing, notifications arriving is the liveness truth. Stop that orphan (it is certainly yours) and re-arm.
 
 Only stop a watcher you are certain is your own duplicate. A spare poller costs a few API calls; a wrong kill costs a session its messages and says nothing while it does.
 
