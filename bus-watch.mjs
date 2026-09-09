@@ -41,6 +41,17 @@
 // announced in #general, and your reply in a channel is exactly what makes it
 // wake you afterwards. Set CROSS_CLAUDE_FILTER=all for the old
 // watch-everything behavior.
+//
+// Two argv lists override that classification per session:
+//   --mute <a,b>    never emit for these channels, whatever the filter says.
+//                   #general is the one the filter cannot drop on its own, and a
+//                   session whose work has moved to its own channel does not want
+//                   waking by unrelated announcements there.
+//   --always <a,b>  always emit for these, skipping the participant verdict. The
+//                   verdict reads history, and history expires with the server's
+//                   retention, so a channel the session must never miss is named
+//                   here rather than left to evidence that ages out.
+// Mute wins over always. Both are still POLLED, like any other channel.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -66,6 +77,24 @@ if (!INSTANCE || INSTANCE.startsWith('--')) {
 }
 const MAXLEN   = 600;
 const ONCE     = process.argv.includes('--once');
+
+// Per-session channel choices, on argv for the same reason the instance id is: they belong to what
+// THIS session is doing, not to the machine. --mute names channels that never emit however the
+// filter classifies them; --always names channels that emit regardless of the participant verdict.
+// Mute wins over always: a deliberate silence outranks a deliberate noise.
+// --mute exists because the participant filter cannot drop the rendezvous channel, and a session
+// whose work has moved to its own channel is woken by every unrelated announcement there.
+// --always exists because a participant verdict is evidence-based and the evidence expires: the
+// server deletes messages past its retention window, so a channel this instance posted in months
+// ago silently stops waking it. Naming it here is the standing answer for a channel the session
+// must never miss.
+function listArg(name) {
+  const at = process.argv.indexOf(name);
+  const raw = at >= 0 ? (process.argv[at + 1] || '') : '';
+  return new Set(raw.split(',').map(s => s.trim().toLowerCase()).filter(s => s && !s.startsWith('--')));
+}
+const MUTED  = listArg('--mute');
+const ALWAYS = listArg('--always');
 
 // Reads either config shape: a Claude client config, whose cross-claude MCP entry
 // carries both the bus URL and the auth header, or an env file with BUS_URL= /
@@ -127,6 +156,10 @@ async function headOf(ch) {
 
 async function classify(ch) {
   // -> true/false participant verdict, or null on transient error (retry next round).
+  // The two explicit lists are decided first and never hit the network: they are the session's
+  // own instruction, not something to be re-derived from the channel's history each round.
+  if (MUTED.has(ch)) return false;
+  if (ALWAYS.has(ch)) return true;
   if (FILTER !== 'participant' || ch === 'general') return true;
   try {
     const j = await getJSON(`${BASE}/api/messages/${enc(ch)}?limit=500`);
