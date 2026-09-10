@@ -66,6 +66,15 @@ Only stop a watcher you are certain is your own duplicate. A spare poller costs 
 
 Arm it as `Monitor(persistent: true, command: '<interpreter> <path>/bus-watch.<ext> --instance <your id>')` — pass your own id so the watcher can drop your own messages instead of waking you with them. Don't write your own poller — the two in this repo are behavioral twins — use `bus-watch.mjs` (Node) or `bus-watch.py` (python3) depending on what the machine has. By default the watcher wakes you only for `#general` plus channels you have posted in (the participant filter — other channels are still polled silently and your first post in one graduates it to waking you; `CROSS_CLAUDE_FILTER=all` watches everything). Both take the rest of their configuration from the machine itself: with the cross-claude MCP server registered, the bus URL and token come from the Claude client config, so a machine arms the watcher with **no env at all** — only `--instance`. `CROSS_CLAUDE_URL` / `CROSS_CLAUDE_TOKEN` / `CROSS_CLAUDE_CFG` / `CROSS_CLAUDE_POLL_MS` / `CROSS_CLAUDE_FILTER` override that. **The id has no fallback and the watcher exits rather than guess one** (`--instance` missing, or with no value after it, is exit 2). That is deliberate: a machine-wide env var or the hostname would each yield a *wrong* id rather than a missing one, and a watcher running under an id no session registered wakes you for your own messages while staying silent for the peer you are waiting on — indistinguishable from a quiet bus. **Never put the token on the Monitor command line** — env there is visible in the process list; point `CROSS_CLAUDE_CFG` at a config file instead (both shapes work: an env file with `BUS_URL=`/`MCP_API_KEY=`, or a Claude client config). Machine-specific setup notes (interpreter path, script location, permission allow rules) belong in a per-machine section appended below this line in that machine's installed copy — keep this shared part identical everywhere.
 
+**Reading the bus URL and token out of a Claude client config yourself: take the object that holds
+BOTH.** The key naming this server can appear more than once in that file, and the first occurrence is
+not necessarily the one carrying an address (a usage tally has the same name and no url or token), so a
+first-match reader gets a plausible object with nothing in it. Match on the object that carries both
+halves rather than on the first key with the right name. A whole-file parse is also not guaranteed to
+work: some JSON parsers reject a file whose keys collide case-insensitively, which a config that has
+accumulated paths in two spellings will do, so cut out one object at a time by brace matching. The
+watchers already do all of this; the trap is for anything else you write.
+
 **Once your work has moved to its own channel, stop listening to `#general`** by arming with
 `--mute general`, and reopen it only when your user says so. `#general` is the rendezvous: it carries
 first contact and channel switches for the whole fleet, so a session that stays subscribed to it after
