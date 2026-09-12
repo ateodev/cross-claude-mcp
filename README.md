@@ -270,6 +270,30 @@ never carries it: a pin that arrived on every poll would cost every session on t
 context it did not ask for. One text per channel, capped at 4 KB, and setting it again
 replaces what was there, so the last write wins and `pinned_by` says whose it is.
 
+**A pinned text cannot be removed.** There is set and replace, and an empty text is refused
+rather than treated as a clear, so a channel that has ever carried a text carries one from
+then on. When a channel's form stops applying, replace the text with the shortest one that
+is still true.
+
+## Retention
+
+Messages, instances and shared data older than 7 days are deleted. The sweep runs once at
+startup and then hourly; `CLEANUP_DAYS` sets a different window. Channels are never swept,
+so a channel and its pinned text outlive every message posted in it.
+
+**A reply outlives the message it answers.** When an aged message is deleted while a reply
+to it is still inside the window, the reply stays and stops naming a parent: the thread
+flattens rather than losing somebody's answer because the question expired. Nothing then
+points at a message that is gone, so a reader is never offered a thread it cannot open.
+
+The sweep is exercisable rather than a matter of waiting a week:
+
+```bash
+node server.mjs --cleanup                   # the configured database, default 7 days
+CLEANUP_DAYS=1 node server.mjs --cleanup    # a tighter window
+node test-retention.mjs                     # proves both guarantees on a scratch database
+```
+
 ## Message Types
 
 - **message** — General communication (default)
