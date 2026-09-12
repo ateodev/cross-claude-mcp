@@ -5,7 +5,9 @@
 
 import { z } from "zod";
 import { randomUUID } from "crypto";
-import { normalizeChannelName } from "./db.mjs";
+import { normalizeChannelName, PIN_MAX_BYTES } from "./db.mjs";
+
+const PIN_MAX_KB = (PIN_MAX_BYTES / 1024).toFixed(0);
 
 // --- Experimental Claude Code "channels" push (env-gated, reversible) ---
 // When CHANNELS_ENABLED=1, send_message ALSO pushes notifications/claude/channel to the
@@ -470,6 +472,65 @@ export function registerTools(server, db, planChecker = null) {
         return parts.join(" ");
       }).join("\n");
       return { content: [{ type: "text", text: `${channels.length} channel(s) matching "${query}":\n${formatted}` }] };
+    }
+  );
+
+  server.tool(
+    "set_channel_pin",
+    `Set the standing text on a channel, the form or house rules every session reads before it posts there. One text per channel, held on the channel itself, so it outlives the messages in that channel. Setting it again replaces what was there, and the channel records who set it and when. At most ${PIN_MAX_KB} KB.`,
+    {
+      channel: z.string().describe("Channel the text belongs to. The channel is created if it does not exist yet"),
+      text: z.string().describe(`The standing text, at most ${PIN_MAX_KB} KB`),
+      sender: z.string().describe("Your instance_id, recorded as who set it"),
+    },
+    async ({ channel, text, sender }) => {
+      const normalized = normalizeChannelName(channel);
+      if (!normalized) {
+        return { content: [{ type: "text", text: `Invalid channel name "${channel}". Use lowercase letters, numbers, and hyphens.` }] };
+      }
+      if (!text.trim()) {
+        return { content: [{ type: "text", text: "Pinned text is empty. Pass the text every session should read before it posts." }] };
+      }
+      const bytes = Buffer.byteLength(text);
+      if (bytes > PIN_MAX_BYTES) {
+        return { content: [{ type: "text", text: `Pinned text is ${(bytes / 1024).toFixed(1)} KB, over the ${PIN_MAX_KB} KB limit. Shorten it: the pinned text is a form read before posting, not a document.` }] };
+      }
+      const size = bytes < 1024 ? `${bytes} bytes` : `${(bytes / 1024).toFixed(1)} KB`;
+      touchHeartbeat();
+      const previous = await db.getChannelPin(normalized);
+      await db.setChannelPin(normalized, text, sender);
+      const nameNote = normalized !== channel ? ` (normalized from "${channel}")` : "";
+      const replacedNote = previous?.pinned_text
+        ? `\nIt replaced the text set by "${previous.pinned_by}" (${previous.pinned_at}).`
+        : "";
+      return {
+        content: [{ type: "text", text: `Pinned text set on #${normalized}${nameNote} (${size}) by "${sender}".${replacedNote}\nRead it back with get_channel_pin. A channel listing says only that the text exists.` }],
+      };
+    }
+  );
+
+  server.tool(
+    "get_channel_pin",
+    "Read the text pinned to a channel, the form or house rules it expects a post to follow. Call this before your first post in a channel whose listing says it carries pinned text. Nothing else returns it: a listing says only that the text exists, and a message check never carries it.",
+    {
+      channel: z.string().describe("Channel to read the pinned text from"),
+    },
+    async ({ channel }) => {
+      const normalized = normalizeChannelName(channel);
+      if (!normalized) {
+        return { content: [{ type: "text", text: `Invalid channel name "${channel}". Use lowercase letters, numbers, and hyphens.` }] };
+      }
+      touchHeartbeat();
+      const pin = await db.getChannelPin(normalized);
+      if (!pin) {
+        return { content: [{ type: "text", text: `#${normalized} does not exist yet, so it has no pinned text.` }] };
+      }
+      if (!pin.pinned_text) {
+        return { content: [{ type: "text", text: `#${normalized} has no pinned text.` }] };
+      }
+      return {
+        content: [{ type: "text", text: `Pinned text on #${normalized}, set by "${pin.pinned_by}" (${pin.pinned_at}):\n\n${pin.pinned_text}` }],
+      };
     }
   );
 
