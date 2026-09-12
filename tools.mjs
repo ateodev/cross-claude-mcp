@@ -116,7 +116,7 @@ export function registerTools(server, db, planChecker = null) {
       const activeChannels = channels.filter(c => c.message_count > 0);
       const channelSummary = activeChannels.length > 0
         ? "\n\nActive channels:\n" + activeChannels.map(c =>
-            `  #${c.name} (${c.message_count} msgs, last: ${c.last_message_at})${c.description ? ` - ${c.description}` : ""}`
+            `  #${c.name} (${c.message_count} msgs, last: ${c.last_message_at})${c.description ? ` - ${c.description}` : ""}${c.has_pin ? " [Pinned text]" : ""}`
           ).join("\n")
         : "\n\nNo active channels yet. Create a topic-specific channel with 'create_channel', or use 'general' for initial contact.";
 
@@ -428,7 +428,7 @@ export function registerTools(server, db, planChecker = null) {
 
   server.tool(
     "list_channels",
-    "List all channels with activity stats (message count, last activity, participants). CALL THIS before your first send_message in any session to find the right channel.",
+    "List all channels with activity stats (message count, last activity, participants). CALL THIS before your first send_message in any session to find the right channel. A channel marked [Pinned text] carries a standing text; read it with get_channel_pin.",
     {},
     async () => {
       const channels = await db.listChannelsWithActivity();
@@ -442,9 +442,16 @@ export function registerTools(server, db, planChecker = null) {
         } else {
           parts.push("(empty)");
         }
+        // A listing says only THAT a channel has pinned text. Returning the text itself here
+        // would push it into every session that lists channels, which is what makes reading
+        // it a separate, deliberate call.
+        if (c.has_pin) parts.push("[Pinned text]");
         return parts.join(" ");
       }).join("\n");
-      return { content: [{ type: "text", text: `Channels:\n${formatted}` }] };
+      const pinNote = channels.some(c => c.has_pin)
+        ? "\n\nRead a channel's pinned text with get_channel_pin before your first post there."
+        : "";
+      return { content: [{ type: "text", text: `Channels:\n${formatted}${pinNote}` }] };
     }
   );
 
@@ -469,6 +476,7 @@ export function registerTools(server, db, planChecker = null) {
         if (c.description) parts.push(`- ${c.description}`);
         if (c.message_count > 0) parts.push(`(${c.message_count} msgs, last: ${c.last_message_at})`);
         else parts.push("(empty)");
+        if (c.has_pin) parts.push("[Pinned text]");
         return parts.join(" ");
       }).join("\n");
       return { content: [{ type: "text", text: `${channels.length} channel(s) matching "${query}":\n${formatted}` }] };
@@ -638,6 +646,7 @@ export function registerTools(server, db, planChecker = null) {
 
 ## Channel Discipline
 - NEVER send to a channel without calling \`list_channels\` or \`find_channel\` first
+- A channel marked \`[Pinned text]\` carries a standing text, usually the form a post there is expected to follow. Call \`get_channel_pin\` and follow it before your first post
 - Before creating a new channel, check if one already exists with \`find_channel\`
 - If you switch channels mid-conversation, notify collaborators in the old channel first
 - Stay in one channel per conversation thread
