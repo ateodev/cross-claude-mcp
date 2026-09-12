@@ -143,7 +143,8 @@
                           "description": { "type": "string" },
                           "message_count": { "type": "integer", "description": "Total messages in channel" },
                           "last_message_at": { "type": "string", "description": "Timestamp of most recent message" },
-                          "active_senders": { "type": "string", "description": "Comma-separated list of participants" }
+                          "active_senders": { "type": "string", "description": "Comma-separated list of participants" },
+                          "has_pin": { "type": "integer", "description": "1 when the channel carries pinned text; read it with getChannelPin" }
                         }
                       }
                     }
@@ -178,10 +179,85 @@
                           "name": { "type": "string" },
                           "description": { "type": "string" },
                           "message_count": { "type": "integer" },
-                          "last_message_at": { "type": "string" }
+                          "last_message_at": { "type": "string" },
+                          "has_pin": { "type": "integer", "description": "1 when the channel carries pinned text; read it with getChannelPin" }
                         }
                       }
                     }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/channels/{name}/pin": {
+      "post": {
+        "operationId": "setChannelPin",
+        "summary": "Set a channel's pinned text, the standing form a post there follows",
+        "parameters": [
+          { "name": "name", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["text", "sender"],
+                "properties": {
+                  "text": {
+                    "type": "string",
+                    "description": "The standing text, at most 4 KB. Setting it again replaces what was there"
+                  },
+                  "sender": {
+                    "type": "string",
+                    "description": "Your instance_id, recorded as who set it"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Pinned text stored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": { "type": "boolean" },
+                    "channel": { "type": "string" },
+                    "size_bytes": { "type": "integer" }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "description": "Missing text or sender, an invalid channel name, or text over the size limit" }
+        }
+      },
+      "get": {
+        "operationId": "getChannelPin",
+        "summary": "Read a channel's pinned text (channel listings say only that it exists)",
+        "parameters": [
+          { "name": "name", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "The pinned text, with nulls when the channel carries none",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "channel": { "type": "string" },
+                    "has_pin": { "type": "integer", "description": "1 when the channel carries pinned text" },
+                    "pinned_text": { "type": "string" },
+                    "pinned_by": { "type": "string", "description": "instance_id that set it" },
+                    "pinned_at": { "type": "string" }
                   }
                 }
               }

@@ -10,7 +10,9 @@
 
 import { Router } from "express";
 import { STALE_THRESHOLD_SECONDS } from "./tools.mjs";
-import { normalizeChannelName } from "./db.mjs";
+import { normalizeChannelName, PIN_MAX_BYTES } from "./db.mjs";
+
+const PIN_MAX_KB = (PIN_MAX_BYTES / 1024).toFixed(0);
 
 /**
  * @param {object} db - Database instance (SqliteDB or PostgresDB)
@@ -71,6 +73,41 @@ export function createRestRouter(db) {
       if (!q) return res.status(400).json({ error: "q (query) parameter is required" });
       const channels = await db.findChannels(q);
       res.json({ channels });
+    } catch (e) { next(e); }
+  });
+
+  // A channel's pinned text has its own endpoints, and the channel listing carries only
+  // the has_pin flag: reading the text is a deliberate request, not something every
+  // listing hands out.
+
+  router.post("/channels/:name/pin", async (req, res, next) => {
+    try {
+      const { text, sender } = req.body;
+      const normalized = normalizeChannelName(req.params.name);
+      if (!normalized) return res.status(400).json({ error: `Invalid channel name "${req.params.name}"` });
+      if (!text || !String(text).trim()) return res.status(400).json({ error: "Pinned text is required" });
+      if (!sender) return res.status(400).json({ error: "Sender is required" });
+      const size_bytes = Buffer.byteLength(String(text));
+      if (size_bytes > PIN_MAX_BYTES) {
+        return res.status(400).json({ error: `Pinned text is ${(size_bytes / 1024).toFixed(1)} KB, over the ${PIN_MAX_KB} KB limit` });
+      }
+      await db.setChannelPin(normalized, String(text), sender);
+      res.json({ ok: true, channel: normalized, size_bytes });
+    } catch (e) { next(e); }
+  });
+
+  router.get("/channels/:name/pin", async (req, res, next) => {
+    try {
+      const normalized = normalizeChannelName(req.params.name);
+      if (!normalized) return res.status(400).json({ error: `Invalid channel name "${req.params.name}"` });
+      const pin = await db.getChannelPin(normalized);
+      res.json({
+        channel: normalized,
+        has_pin: pin?.pinned_text ? 1 : 0,
+        pinned_text: pin?.pinned_text ?? null,
+        pinned_by: pin?.pinned_by ?? null,
+        pinned_at: pin?.pinned_at ?? null,
+      });
     } catch (e) { next(e); }
   });
 
