@@ -31,6 +31,12 @@
 // message poll never carries it either, so pinning or replacing a text emits
 // nothing here. A session that wants that text reads it deliberately.
 //
+// Only messages reach stdout. Everything else goes to stderr: a poll the bus did
+// not answer is noted once per channel, and once more when that channel answers
+// again. A failure that stops this watcher doing its one job ends the process with
+// a line saying what failed, because a watcher that cannot emit must never look
+// like a quiet bus.
+//
 // Channel FILTER (multi-machine buses): with more than two instances on the
 // bus, watching every channel wakes an instance for conversations between
 // OTHER peers. CROSS_CLAUDE_FILTER=participant (default) EMITS only for
@@ -133,16 +139,32 @@ if (!BASE || !AUTH) {
 }
 const HEADERS = { Authorization: AUTH.startsWith('Bearer ') ? AUTH : 'Bearer ' + AUTH };
 
+// Every way the bus can fail to answer is raised as one type, so a caller can tell a bus that
+// is briefly away from a fault in the watcher itself. Everything this function can raise is a
+// transport or a parse failure, which is what makes the whole body one boundary.
+class BusUnreachable extends Error {}
 async function getJSON(url) {
-  const r = await fetch(url, { headers: HEADERS, signal: AbortSignal.timeout(15000) });
-  if (!r.ok) throw new Error('HTTP ' + r.status);
-  return r.json();
+  try {
+    const r = await fetch(url, { headers: HEADERS, signal: AbortSignal.timeout(15000) });
+    if (!r.ok) throw new BusUnreachable('HTTP ' + r.status);
+    return await r.json();
+  } catch (err) {
+    throw err instanceof BusUnreachable ? err : new BusUnreachable(`${err.name}: ${err.message}`, { cause: err });
+  }
 }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const last = {};          // channel -> last seen message id
 let started = false;      // startup baselining done?
 
 const part = {};  // channel -> true (emit) / false (silent scan); absent = unclassified, retry
+const away = new Set();  // channels whose last poll the bus did not answer, so the note is printed once
+
+// A watcher that cannot print its line wakes nobody, and from outside that reads exactly like
+// an idle bus. A stdout that stops accepting writes therefore stops the watcher, loudly.
+process.stdout.on('error', err => {
+  process.stderr.write(`bus-watch: Stopped, a message line could not be printed. ${err.name}: ${err.message}\n`);
+  process.exit(1);
+});
 
 // Channel names and instance ids reach the server as URL components, so they are
 // escaped: an id carries a dot-separated session suffix, and an unescaped '#' or '&'
@@ -156,7 +178,7 @@ async function listChannels() {
 
 async function headOf(ch) {
   try { const j = await getJSON(`${BASE}/api/messages/${enc(ch)}?limit=1`); return j.last_id ?? 0; }
-  catch { return 0; }
+  catch (err) { if (err instanceof BusUnreachable) return 0; throw err; }
 }
 
 async function classify(ch) {
@@ -169,13 +191,14 @@ async function classify(ch) {
   try {
     const j = await getJSON(`${BASE}/api/messages/${enc(ch)}?limit=500`);
     return (j.messages || []).some(m => m.sender === INSTANCE);
-  } catch { return null; }
+  } catch (err) { if (err instanceof BusUnreachable) return null; throw err; }
 }
 
 async function syncChannels() {
   // Discover channels each round; tolerate transient failures (keep last known set).
   let names;
-  try { names = await listChannels(); } catch { return Object.keys(last); }
+  try { names = await listChannels(); }
+  catch (err) { if (err instanceof BusUnreachable) return Object.keys(last); throw err; }
   for (const ch of names) {
     if (!(ch in last)) {
       if (!started) {
@@ -222,7 +245,27 @@ async function poll(ch) {
       }
       if (msgs.length) last[ch] = j.last_id ?? last[ch];
     }
-  } catch { /* transient (server restart, timeout) — ignore, keep watching */ }
+    if (away.has(ch)) {
+      away.delete(ch);
+      process.stderr.write(`bus-watch: Channel ${ch} can be polled again.\n`);
+    }
+  } catch (err) {
+    if (err instanceof BusUnreachable) {
+      // A poll the bus did not answer is transient: a restart, a timeout. It goes to stderr
+      // and never to stdout, because a stdout line is a wake-up and an outage is not a
+      // message. One note per channel, and one when the channel answers again.
+      if (!away.has(ch)) {
+        away.add(ch);
+        process.stderr.write(`bus-watch: Channel ${ch} could not be polled. ${err.message}\n`);
+      }
+      return;
+    }
+    // Anything else is the watcher failing at its own job. Swallowed, it leaves a process
+    // that polls forever and wakes nobody, alive from every angle and silent for a reason
+    // no reader can see. So it stops here and names what went wrong.
+    process.stderr.write(`bus-watch: Stopped, polling channel ${ch} failed. ${err.name}: ${err.message}\n`);
+    process.exit(1);
+  }
 }
 
 await syncChannels();

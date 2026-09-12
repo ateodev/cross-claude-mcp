@@ -33,6 +33,11 @@ record: the channel listing carries has_pin and never the text, and a message po
 never carries it either, so pinning or replacing a text emits nothing here. A
 session that wants that text reads it deliberately.
 
+Only messages reach stdout. Everything else goes to stderr: a poll the bus did not
+answer is noted once per channel, and once more when that channel answers again. A
+failure that stops this watcher doing its one job ends the process with a line saying
+what failed, because a watcher that cannot emit must never look like a quiet bus.
+
 Channel FILTER (multi-machine buses): with more than two instances on the bus,
 watching every channel wakes an instance for conversations between OTHER peers.
 CROSS_CLAUDE_FILTER=participant (default) EMITS only for #general (the
@@ -65,6 +70,19 @@ Usage:
 """
 import json, os, time, sys, re, urllib.request
 from urllib.parse import quote as enc  # channel names and ids are URL components
+
+# Printing one line IS the job, so the print must never be the thing that fails. A python
+# stdout that is a pipe or a file takes the platform's code page, and on Windows that code
+# page cannot encode the bell character an emitted line opens with. Both streams are set to
+# UTF-8 here, before anything is written, and a character a reader still cannot take degrades
+# to an escape rather than costing the whole line.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+
+
+class BusUnreachable(Exception):
+    """The bus could not be read: the request failed, or its answer was not JSON."""
 
 POLL_S   = (int(os.environ.get("CROSS_CLAUDE_POLL_MS") or 0) / 1000) or 20
 FILTER   = (os.environ.get("CROSS_CLAUDE_FILTER") or "participant").strip().lower()
@@ -143,15 +161,22 @@ if not BASE or not AUTH:
 
 HEADERS = {"Authorization": AUTH if AUTH.startswith("Bearer ") else "Bearer " + AUTH}
 
+# Every way the bus can fail to answer is raised as one type, so a caller can tell a bus that
+# is briefly away from a fault in the watcher itself. Everything this function can raise is a
+# transport or a parse failure, which is what makes the whole body one boundary.
 def get_json(url):
-    req = urllib.request.Request(url, headers=HEADERS)
-    with urllib.request.urlopen(req, timeout=15) as r:
-        return json.load(r)
+    try:
+        req = urllib.request.Request(url, headers=HEADERS)
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return json.load(r)
+    except (OSError, json.JSONDecodeError) as err:
+        raise BusUnreachable(f"{type(err).__name__}: {err}") from err
 
 last = {}        # channel -> last seen message id
 started = False  # startup baselining done?
 
 part = {}  # channel -> True (emit) / False (silent scan); absent = unclassified, retry
+away = set()  # channels whose last poll the bus did not answer, so the note is printed once
 
 def list_channels():
     j = get_json(f"{BASE}/api/channels")
@@ -161,7 +186,7 @@ def head_of(ch):
     try:
         j = get_json(f"{BASE}/api/messages/{enc(ch)}?limit=1")
         return j.get("last_id") or 0
-    except Exception:
+    except BusUnreachable:
         return 0
 
 def classify(ch):
@@ -177,14 +202,14 @@ def classify(ch):
     try:
         j = get_json(f"{BASE}/api/messages/{enc(ch)}?limit=500")
         return any(m.get("sender") == INSTANCE for m in (j.get("messages") or []))
-    except Exception:
+    except BusUnreachable:
         return None
 
 def sync_channels():
     # Discover channels each round; tolerate transient failures (keep last known set).
     try:
         names = list_channels()
-    except Exception:
+    except BusUnreachable:
         return list(last.keys())
     for ch in names:
         if ch not in last:
@@ -202,8 +227,17 @@ def sync_channels():
 
 def emit(ch, m):
     c = re.sub(r"\s+", " ", str(m.get("content", ""))).strip()[:MAXLEN]
-    print(f"\U0001f514 cross-claude [{ch} #{m.get('id')} {m.get('message_type')}] "
-          f"{m.get('sender')}: {c}", flush=True)
+    line = (f"\U0001f514 cross-claude [{ch} #{m.get('id')} {m.get('message_type')}] "
+            f"{m.get('sender')}: {c}")
+    try:
+        print(line, flush=True)
+    except Exception as err:
+        # A watcher that cannot print its line wakes nobody, and from outside that reads
+        # exactly like an idle bus. So it stops and says why, rather than polling on.
+        sys.stderr.write(f"bus-watch: Stopped, a message line could not be printed. "
+                         f"{type(err).__name__}: {err}\n")
+        sys.stderr.flush()
+        raise SystemExit(1)
 
 def poll(ch):
     try:
@@ -231,8 +265,27 @@ def poll(ch):
                         emit(ch, m)
             if ms:
                 last[ch] = j.get("last_id") or last[ch]
-    except Exception:
-        pass  # transient errors must not kill the watcher; stay silent (stderr only would be noise)
+    except BusUnreachable as err:
+        # A poll the bus did not answer is transient: a restart, a timeout. It goes to stderr
+        # and never to stdout, because a stdout line is a wake-up and an outage is not a
+        # message. One note per channel, and one when the channel answers again.
+        if ch not in away:
+            away.add(ch)
+            sys.stderr.write(f"bus-watch: Channel {ch} could not be polled. {err}\n")
+            sys.stderr.flush()
+    except Exception as err:
+        # Anything else is the watcher failing at its own job. Swallowed, it leaves a process
+        # that polls forever and wakes nobody, alive from every angle and silent for a reason
+        # no reader can see. So it stops here and names what went wrong.
+        sys.stderr.write(f"bus-watch: Stopped, polling channel {ch} failed. "
+                         f"{type(err).__name__}: {err}\n")
+        sys.stderr.flush()
+        raise SystemExit(1)
+    else:
+        if ch in away:
+            away.discard(ch)
+            sys.stderr.write(f"bus-watch: Channel {ch} can be polled again.\n")
+            sys.stderr.flush()
 
 sync_channels()
 started = True
