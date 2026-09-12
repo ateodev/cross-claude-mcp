@@ -28,6 +28,11 @@ channel. Channels existing at startup are baselined at their current last_id
 first messages are not missed; transient discovery failures keep the last
 known set.
 
+Only MESSAGES wake a session. A channel's pinned text is metadata on the channel
+record: the channel listing carries has_pin and never the text, and a message poll
+never carries it either, so pinning or replacing a text emits nothing here. A
+session that wants that text reads it deliberately.
+
 Channel FILTER (multi-machine buses): with more than two instances on the bus,
 watching every channel wakes an instance for conversations between OTHER peers.
 CROSS_CLAUDE_FILTER=participant (default) EMITS only for #general (the
