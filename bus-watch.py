@@ -68,7 +68,8 @@ Usage:
   python3 bus-watch.py --instance <prefix>.<suffix> --once   # baseline + one poll, armed line on stderr, exit 0 (connectivity test)
   python3 bus-watch.py --instance <prefix>.<suffix>          # persistent poll loop; for the Monitor tool
 """
-import json, os, time, sys, re, urllib.request
+import json, os, time, sys, re, signal, traceback, urllib.request
+from datetime import datetime, timezone
 from urllib.parse import quote as enc  # channel names and ids are URL components
 
 # Printing one line IS the job, so the print must never be the thing that fails. A python
@@ -105,6 +106,62 @@ if not INSTANCE or INSTANCE.startswith("--"):
     sys.exit(2)
 MAXLEN   = 600
 ONCE     = "--once" in sys.argv
+
+# --- Failure reporting, the same contract as the node twin. This watcher IS an unattended
+# session's liveness mechanism, so its own death must never be silent: a watcher that is gone looks
+# exactly like a quiet bus. Every diagnostic goes to a FILE beside this script as well as to
+# stderr, because the harness's pipes are themselves a suspect whenever a watcher dies with no
+# trace, and a stack written to a broken pipe is lost exactly when it is needed. Every write out of
+# this process is guarded, so reporting a failure can never be the thing that ends the watch. And a
+# fault the watcher cannot classify as a transient bus STOPS it, with the reason in the log first:
+# the same rule the unemittable-line path follows, because a watcher carrying an unknown fault must
+# not keep polling as though it were healthy. Stopping is visible (the harness reports the task
+# ended) and silence is not, which is the whole distinction this file is built around.
+#
+# Reading the log after a death: a line naming a signal means something stopped the watcher on
+# purpose. A crash line means the watcher's own code failed and the traceback says where. A log
+# that simply STOPS, with neither kind of line, means the process was terminated without warning
+# (a hard kill, which no handler can catch), so look at what was managing it rather than here.
+LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs", f"bus-watch-{INSTANCE}.log")
+
+
+def note(line):
+    try:
+        os.makedirs(os.path.dirname(LOG), exist_ok=True)
+        with open(LOG, "a", encoding="utf-8") as fh:
+            fh.write(f"{datetime.now(timezone.utc).isoformat()} [{INSTANCE}] {line}\n")
+    except Exception:
+        pass  # a log that cannot be written is not allowed to be what kills the watcher
+    try:
+        sys.stderr.write(f"bus-watch: {line}\n")
+        sys.stderr.flush()
+    except Exception:
+        pass  # broken pipe: the file holds it
+
+
+# The log line goes first and the event second, because the file is the copy that survives a pipe
+# the harness has already taken away. Then the process ends: a fault nobody classified is not
+# something to poll through.
+def fatal(what, err):
+    detail = " ".join(" ".join(traceback.format_exception(type(err), err, err.__traceback__)).split())
+    note(f"Stopping, {what}: {detail}")
+    try:
+        print(f"\U0001f514 cross-claude bus-watch [{INSTANCE}] stopped, {what}. Re-arm it; the reason is in {LOG}", flush=True)
+    except Exception:
+        pass  # no channel left to say it on
+    sys.exit(1)
+
+
+def _on_signal(signum, _frame):
+    note(f"stopped by signal {signum}")
+    sys.exit(0)
+
+
+for _sig in ("SIGTERM", "SIGINT", "SIGBREAK", "SIGHUP"):
+    try:
+        signal.signal(getattr(signal, _sig), _on_signal)
+    except (AttributeError, ValueError, OSError):
+        pass  # not every signal exists on every platform
 
 # Per-session channel choices, on argv for the same reason the instance id is: they belong to what
 # THIS session is doing, not to the machine. --mute names channels that never emit however the
@@ -217,8 +274,7 @@ def sync_channels():
                 last[ch] = head_of(ch)  # startup: baseline at head -- no history replay
             else:
                 last[ch] = 0  # appeared mid-run: brand new, deliver from the beginning
-                sys.stderr.write(f"bus-watch: new channel discovered: {ch}\n")
-                sys.stderr.flush()
+                note(f"new channel discovered: {ch}")
         if ch not in part:
             verdict = classify(ch)
             if verdict is not None:
@@ -291,9 +347,8 @@ sync_channels()
 started = True
 _watched = sorted(c for c in last if part.get(c))
 _silent  = sorted(c for c in last if not part.get(c))
-sys.stderr.write(f"bus-watch armed (filter={FILTER}) emitting={','.join(_watched)} "
-                 f"silent-scan={','.join(_silent)} baselines={json.dumps(last)}\n")
-sys.stderr.flush()
+note(f"armed (filter={FILTER}) emitting={','.join(_watched)} "
+     f"silent-scan={','.join(_silent)} baselines={json.dumps(last)}")
 
 if ONCE:
     for ch in list(last.keys()):
@@ -301,6 +356,13 @@ if ONCE:
     sys.exit(0)
 
 while True:
-    for ch in sync_channels():
-        poll(ch)
+    # Everything inside poll() and sync_channels() already tolerates a bus that is briefly away, so
+    # a fault arriving HERE is the watcher itself and it stops the watch. This except exists to put
+    # the reason in the log, never to swallow it: a caught fault that let the loop continue would be
+    # the silent wedge this whole file exists to prevent, and it is the defect #401 found.
+    try:
+        for ch in sync_channels():
+            poll(ch)
+    except Exception as exc:
+        fatal("a poll round failed", exc)
     time.sleep(POLL_S)

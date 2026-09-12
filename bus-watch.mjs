@@ -66,6 +66,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const POLL_MS  = Number(process.env.CROSS_CLAUDE_POLL_MS) || 20000;
 const FILTER   = (process.env.CROSS_CLAUDE_FILTER || 'participant').trim().toLowerCase();
@@ -106,6 +107,45 @@ function listArg(name) {
 }
 const MUTED  = listArg('--mute');
 const ALWAYS = listArg('--always');
+
+// --- Failure reporting. This watcher IS an unattended session's liveness mechanism, so its own
+// death must never be silent: a watcher that is gone looks exactly like a quiet bus. Three rules
+// follow from that. Every diagnostic goes to a FILE beside this script as well as to stderr,
+// because the harness's pipes are themselves a suspect whenever a watcher dies with no trace, and
+// a stack written to a broken pipe is lost exactly when it is needed. Every write out of this
+// process is guarded, so reporting a failure can never be the thing that ends the watch. And a
+// fault the watcher cannot classify as a transient bus STOPS it, with the reason in the log first:
+// the same rule the unemittable-line handler above follows, because a watcher carrying an unknown
+// fault must not keep polling as though it were healthy. Stopping is visible (the harness reports
+// the task ended) and silence is not, which is the whole distinction this file is built around.
+//
+// Reading the log after a death: a line naming a signal means something stopped the watcher on
+// purpose. A crash line means the watcher's own code failed and the stack says where. A log that
+// simply STOPS, with no line of either kind, means the process was terminated without warning
+// (a hard kill, which no handler can catch), so look at what was managing it rather than here.
+const LOG = path.join(path.dirname(fileURLToPath(import.meta.url)), 'logs', `bus-watch-${INSTANCE}.log`);
+function note(line) {
+  try {
+    fs.mkdirSync(path.dirname(LOG), { recursive: true });
+    fs.appendFileSync(LOG, `${new Date().toISOString()} [${INSTANCE}] ${line}\n`);
+  } catch { /* a log that cannot be written is not allowed to be what kills the watcher */ }
+  try { process.stderr.write(`bus-watch: ${line}\n`); } catch { /* broken pipe: the file holds it */ }
+}
+// The log line goes first and the event second, because the file is the copy that survives a pipe
+// the harness has already taken away. Then the process ends: a fault nobody classified is not
+// something to poll through.
+function fatal(what, err) {
+  const detail = err && err.stack ? String(err.stack).replace(/\s+/g, ' ') : String(err);
+  note(`Stopping, ${what}: ${detail}`);
+  try { console.log(`🔔 cross-claude bus-watch [${INSTANCE}] stopped, ${what}. Re-arm it; the reason is in ${LOG}`); } catch { /* no channel left to say it on */ }
+  process.exit(1);
+}
+process.on('uncaughtException', e => fatal('uncaught exception', e));
+process.on('unhandledRejection', e => fatal('unhandled rejection', e));
+process.on('exit', code => { if (code !== 0) note(`exiting with code ${code}`); });
+for (const sig of ['SIGTERM', 'SIGINT', 'SIGBREAK', 'SIGHUP']) {
+  try { process.on(sig, () => { note(`stopped by ${sig}`); process.exit(0); }); } catch { /* not every signal exists on every platform */ }
+}
 
 // Reads either config shape: a Claude client config, whose cross-claude MCP entry
 // carries both the bus URL and the auth header, or an env file with BUS_URL= /
@@ -205,7 +245,7 @@ async function syncChannels() {
         last[ch] = await headOf(ch);  // startup: baseline at head — no history replay
       } else {
         last[ch] = 0;  // appeared mid-run: brand new, deliver from the beginning
-        process.stderr.write(`bus-watch: new channel discovered: ${ch}\n`);
+        note(`new channel discovered: ${ch}`);
       }
     }
     if (!(ch in part)) {
@@ -270,14 +310,20 @@ async function poll(ch) {
 
 await syncChannels();
 started = true;
-// readiness note on stderr (Monitor: stderr -> output file, NOT an event line)
+// readiness note on stderr and in the log (Monitor: stderr -> output file, NOT an event line)
 const watched = Object.keys(last).filter(c => part[c]).sort();
 const silent  = Object.keys(last).filter(c => !part[c]).sort();
-process.stderr.write(`bus-watch armed (filter=${FILTER}) @ ${new Date().toISOString()} emitting=${watched.join(',')} silent-scan=${silent.join(',')} baselines=${JSON.stringify(last)}\n`);
+note(`armed (filter=${FILTER}) emitting=${watched.join(',')} silent-scan=${silent.join(',')} baselines=${JSON.stringify(last)}`);
 
 if (ONCE) { for (const ch of Object.keys(last)) await poll(ch); process.exit(0); }
 while (true) {
-  const names = await syncChannels();
-  for (const ch of names) await poll(ch);
+  // Everything inside poll() and syncChannels() already tolerates a bus that is briefly away, so a
+  // fault arriving HERE is the watcher itself and it stops the watch. This catch exists to put the
+  // reason in the log, never to swallow it: a caught fault that let the loop continue would be the
+  // silent wedge this whole file exists to prevent.
+  try {
+    const names = await syncChannels();
+    for (const ch of names) await poll(ch);
+  } catch (e) { fatal('a poll round failed', e); }
   await sleep(POLL_MS);
 }
