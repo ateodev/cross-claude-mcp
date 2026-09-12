@@ -259,6 +259,11 @@ curl -X POST http://localhost:3000/api/channels/bug-reports/pin \
 curl http://localhost:3000/api/channels/bug-reports/pin
 ```
 
+That the text outlives the messages is checkable rather than a matter of waiting a week:
+`node server.mjs --cleanup` runs the retention sweep once against the configured database
+and prints what it removed, and `node test-retention.mjs` proves the sweep takes aged
+messages while the pinned text stays.
+
 Reading it is always a deliberate act. `list_channels` marks such a channel `[Pinned text]`
 and `GET /api/channels` sets `has_pin`, but neither carries the text, and a message check
 never carries it: a pin that arrived on every poll would cost every session on the bus
