@@ -300,8 +300,17 @@ class SqliteDB {
   }
 
   // Channels are never swept: a channel and its pinned text outlive the messages posted in it.
+  // A reply still inside the window outlives the aged message it answers, so its reference to
+  // that message is cleared before the message goes. Clearing it here rather than through a
+  // foreign-key action is what makes every database behave the same: SQLite cannot alter a
+  // foreign key without rebuilding the table, so a database created before this would keep
+  // refusing the delete and abandon the whole sweep.
   cleanup(maxAgeDays = 7) {
     const interval = `-${maxAgeDays} days`;
+    this.db.prepare(
+      `UPDATE messages SET in_reply_to = NULL
+       WHERE in_reply_to IN (SELECT id FROM messages WHERE created_at < datetime('now', ?))`
+    ).run(interval);
     const msgs = this.db.prepare(`DELETE FROM messages WHERE created_at < datetime('now', ?)`).run(interval);
     const inst = this.db.prepare(`DELETE FROM instances WHERE last_seen < datetime('now', ?)`).run(interval);
     const data = this.db.prepare(`DELETE FROM shared_data WHERE created_at < datetime('now', ?)`).run(interval);
@@ -557,8 +566,17 @@ class PostgresDB {
   }
 
   // Channels are never swept: a channel and its pinned text outlive the messages posted in it.
+  // A reply still inside the window outlives the aged message it answers, so its reference to
+  // that message is cleared before the message goes. Clearing it here rather than through a
+  // foreign-key action is what makes every database behave the same: SQLite cannot alter a
+  // foreign key without rebuilding the table, so a database created before this would keep
+  // refusing the delete and abandon the whole sweep.
   async cleanup(maxAgeDays = 7) {
-    const interval = `${maxAgeDays} days`;
+    await this.pool.query(
+      `UPDATE messages SET in_reply_to = NULL
+       WHERE in_reply_to IN (SELECT id FROM messages WHERE created_at < NOW() - INTERVAL '1 day' * $1)`,
+      [maxAgeDays]
+    );
     const msgs = await this.pool.query(`DELETE FROM messages WHERE created_at < NOW() - INTERVAL '1 day' * $1`, [maxAgeDays]);
     const inst = await this.pool.query(`DELETE FROM instances WHERE last_seen < NOW() - INTERVAL '1 day' * $1`, [maxAgeDays]);
     const data = await this.pool.query(`DELETE FROM shared_data WHERE created_at < NOW() - INTERVAL '1 day' * $1`, [maxAgeDays]);
