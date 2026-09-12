@@ -275,9 +275,14 @@ async function poll(ch) {
       const j = await getJSON(`${BASE}/api/messages/${enc(ch)}?after_id=${last[ch]}`);
       const msgs = j.messages || [];
       const mine = msgs.filter(m => m.sender === INSTANCE).map(m => m.id ?? 0);
-      if (mine.length) {
+      // Graduation cannot UN-MUTE a channel. Mute is the session's own instruction and it outranks
+      // every verdict including this one, because the ordinary way a session touches a muted channel
+      // is to POST in it: announcing a status in the rendezvous channel it deliberately does not want
+      // waking on is exactly that. Without this line the mute lasts only until the session's own next
+      // post there, and it ends silently, looking like a mute that was never applied.
+      if (mine.length && !MUTED.has(ch)) {
         part[ch] = true;
-        process.stderr.write(`bus-watch: now participating in channel: ${ch}\n`);
+        note(`now participating in channel: ${ch}`);
         const cutoff = Math.max(...mine);
         for (const m of msgs) {
           if ((m.id ?? 0) > cutoff && m.sender !== INSTANCE) emit(ch, m);

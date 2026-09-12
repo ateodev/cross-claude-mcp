@@ -311,10 +311,14 @@ def poll(ch):
             j = get_json(f"{BASE}/api/messages/{enc(ch)}?after_id={last[ch]}")
             ms = j.get("messages") or []
             mine = [m.get("id") or 0 for m in ms if m.get("sender") == INSTANCE]
-            if mine:
+            # Graduation cannot UN-MUTE a channel. Mute is the session's own instruction and it
+            # outranks every verdict including this one, because the ordinary way a session touches a
+            # muted channel is to POST in it: announcing a status in the rendezvous channel it
+            # deliberately does not want waking on is exactly that. Without this the mute lasts only
+            # until the session's own next post there, and it ends silently.
+            if mine and ch not in MUTED:
                 part[ch] = True
-                sys.stderr.write(f"bus-watch: now participating in channel: {ch}\n")
-                sys.stderr.flush()
+                note(f"now participating in channel: {ch}")
                 cutoff = max(mine)
                 for m in ms:
                     if (m.get("id") or 0) > cutoff and m.get("sender") != INSTANCE:
