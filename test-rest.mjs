@@ -15,9 +15,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const SERVER_PATH = join(__dirname, "server.mjs");
 const PORT = 9876;
 
-// Kill any lingering process on our test port
+// Kill any lingering process on our test port. A platform without lsof reports no stdout
+// at all, and the suite simply relies on the port being free there.
 const lsof = spawnSync("lsof", ["-ti", `:${PORT}`], { encoding: "utf-8" });
-if (lsof.stdout.trim()) {
+if (lsof.stdout?.trim()) {
   for (const pid of lsof.stdout.trim().split("\n")) {
     spawnSync("kill", ["-9", pid]);
   }
@@ -55,9 +56,11 @@ async function api(method, path, body) {
 async function runTests() {
   console.log("Starting REST API test suite...\n");
 
+  // USERPROFILE as well as HOME: the SQLite factory puts the database under os.homedir(),
+  // which reads USERPROFILE on Windows, so HOME alone would point the test at a real bus.
   const server = spawn("node", [SERVER_PATH], {
     stdio: ["pipe", "pipe", "pipe"],
-    env: { ...process.env, PORT: String(PORT), HOME: TEST_DB_DIR },
+    env: { ...process.env, PORT: String(PORT), HOME: TEST_DB_DIR, USERPROFILE: TEST_DB_DIR },
   });
 
   // Wait for server to start
@@ -230,6 +233,49 @@ async function runTests() {
     r = await api("GET", "/messages/empty-chan");
     assert(r.data.messages.length === 0, "Empty channel returns empty array");
     assert(r.data.last_id === null, "last_id is null for empty channel");
+
+    // 16. Channel pinned text
+    console.log("\n16. Channel pinned text");
+    r = await api("POST", "/channels/Pinned%20Channel/pin", {
+      text: "Report shape:\n1. What broke\n2. Steps to reproduce",
+      sender: "chatgpt-1",
+    });
+    assert(r.status === 200 && r.data.ok, "Pinned text stored");
+    assert(r.data.channel === "pinned-channel", "Channel name normalized");
+
+    r = await api("GET", "/channels/pinned-channel/pin");
+    assert(r.data.has_pin === 1, "has_pin set on the channel that carries one");
+    assert(r.data.pinned_text.includes("Steps to reproduce"), "Pinned text reads back");
+    assert(r.data.pinned_by === "chatgpt-1", "Read names who set it");
+    assert(Boolean(r.data.pinned_at), "Read carries when it was set");
+
+    // Setting it again replaces
+    r = await api("POST", "/channels/pinned-channel/pin", { text: "Shorter form", sender: "claude-1" });
+    assert(r.status === 200 && r.data.ok, "Pinned text replaced");
+    r = await api("GET", "/channels/pinned-channel/pin");
+    assert(r.data.pinned_text === "Shorter form", "Last writer's text is what reads back");
+    assert(r.data.pinned_by === "claude-1", "Read names the last writer");
+
+    // The listing says only that it exists
+    r = await api("GET", "/channels");
+    const pinned = r.data.channels.find(c => c.name === "pinned-channel");
+    assert(pinned.has_pin === 1, "Channel listing flags the pinned text");
+    assert(!("pinned_text" in pinned), "Channel listing carries no pinned text");
+    const unpinned = r.data.channels.find(c => c.name === "general");
+    assert(unpinned.has_pin === 0, "Channel without pinned text is flagged 0");
+
+    // Absence is normal, not an error
+    r = await api("GET", "/channels/never-created/pin");
+    assert(r.status === 200 && r.data.has_pin === 0, "Unknown channel reports no pinned text");
+    assert(r.data.pinned_text === null, "Unknown channel returns a null text");
+
+    // Validation
+    r = await api("POST", "/channels/pinned-channel/pin", { sender: "claude-1" });
+    assert(r.status === 400, "Rejects missing text");
+    r = await api("POST", "/channels/pinned-channel/pin", { text: "Hi" });
+    assert(r.status === 400, "Rejects missing sender");
+    r = await api("POST", "/channels/pinned-channel/pin", { text: "x".repeat(5000), sender: "claude-1" });
+    assert(r.status === 400, "Rejects text over the size limit");
 
     console.log(`\n${"=".repeat(40)}`);
     console.log(`Results: ${passed} passed, ${failed} failed`);
