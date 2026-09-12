@@ -119,6 +119,8 @@ async function runTests() {
     assert(toolNames.includes("share_data"), "Has share_data tool");
     assert(toolNames.includes("get_shared_data"), "Has get_shared_data tool");
     assert(toolNames.includes("list_shared_data"), "Has list_shared_data tool");
+    assert(toolNames.includes("set_channel_pin"), "Has set_channel_pin tool");
+    assert(toolNames.includes("get_channel_pin"), "Has get_channel_pin tool");
     console.log(`   Tools found: ${toolNames.join(", ")}`);
 
     // 2b. List prompts
@@ -422,6 +424,76 @@ async function runTests() {
     });
     assert(getMissing.result.content[0].text.includes("No shared data found"), "Missing key handled gracefully");
 
+    // 18. Channel pinned text
+    console.log("\n18. Channel pinned text");
+    const PIN_TEXT = "Report shape:\n1. What broke\n2. Steps to reproduce";
+    const setPin = await send("tools/call", {
+      name: "set_channel_pin",
+      arguments: { channel: "Pinned Channel", text: PIN_TEXT, sender: "test-alice" },
+    });
+    const setPinText = setPin.result.content[0].text;
+    assert(setPinText.includes("#pinned-channel"), "Pin set on the normalized channel name");
+    assert(setPinText.includes("test-alice"), "Set response names who set it");
+
+    const readPin = await send("tools/call", {
+      name: "get_channel_pin",
+      arguments: { channel: "pinned-channel" },
+    });
+    const readPinText = readPin.result.content[0].text;
+    assert(readPinText.includes("Steps to reproduce"), "Pinned text reads back");
+    assert(readPinText.includes("test-alice"), "Read names who set it");
+
+    // Setting it again replaces, and the record follows the last writer
+    const replacePin = await send("tools/call", {
+      name: "set_channel_pin",
+      arguments: { channel: "pinned-channel", text: "Shorter form", sender: "test-bob" },
+    });
+    assert(replacePin.result.content[0].text.includes("replaced"), "Replacing an existing pin is reported");
+    const rereadPin = await send("tools/call", {
+      name: "get_channel_pin",
+      arguments: { channel: "pinned-channel" },
+    });
+    const rereadPinText = rereadPin.result.content[0].text;
+    assert(rereadPinText.includes("Shorter form"), "Last writer's text is what reads back");
+    assert(!rereadPinText.includes("Steps to reproduce"), "Replaced text is gone");
+    assert(rereadPinText.includes("test-bob"), "Read names the last writer");
+
+    // A listing says only that the text exists
+    const pinnedList = await send("tools/call", { name: "list_channels", arguments: {} });
+    const pinnedListText = pinnedList.result.content[0].text;
+    assert(pinnedListText.includes("[Pinned text]"), "Listing marks a channel that has pinned text");
+    assert(!pinnedListText.includes("Shorter form"), "Listing carries no pinned text");
+
+    // Neither does a message check
+    await send("tools/call", {
+      name: "send_message",
+      arguments: { channel: "pinned-channel", sender: "test-bob", content: "A first report", message_type: "message" },
+    });
+    const pinnedCheck = await send("tools/call", {
+      name: "check_messages",
+      arguments: { channel: "pinned-channel" },
+    });
+    assert(!pinnedCheck.result.content[0].text.includes("Shorter form"), "Message check carries no pinned text");
+
+    // Refusals
+    const emptyPin = await send("tools/call", {
+      name: "set_channel_pin",
+      arguments: { channel: "pinned-channel", text: "   ", sender: "test-bob" },
+    });
+    assert(emptyPin.result.content[0].text.includes("empty"), "Empty pinned text is refused");
+
+    const bigPin = await send("tools/call", {
+      name: "set_channel_pin",
+      arguments: { channel: "pinned-channel", text: "x".repeat(5000), sender: "test-bob" },
+    });
+    assert(bigPin.result.content[0].text.includes("limit"), "Oversized pinned text is refused");
+
+    // Absence is normal, not an error
+    const noPin = await send("tools/call", { name: "get_channel_pin", arguments: { channel: "general" } });
+    assert(noPin.result.content[0].text.includes("no pinned text"), "A channel without pinned text says so");
+    const noChannel = await send("tools/call", { name: "get_channel_pin", arguments: { channel: "never-created" } });
+    assert(noChannel.result.content[0].text.includes("does not exist"), "An unknown channel says so");
+
     console.log(`\n${"=".repeat(40)}`);
     console.log(`Results: ${passed} passed, ${failed} failed`);
     console.log(`${"=".repeat(40)}`);
@@ -430,9 +502,11 @@ async function runTests() {
     failed++;
   } finally {
     server.kill();
-    // Clean up test database
+    // Clean up test database. A killed child can hold the file open for a moment, and on
+    // Windows that refuses the delete, so a leftover database waits for the next run
+    // instead of failing a suite that passed.
     for (const f of [DB_PATH, DB_WAL, DB_SHM]) {
-      if (existsSync(f)) unlinkSync(f);
+      try { if (existsSync(f)) unlinkSync(f); } catch { /* the OS keeps it */ }
     }
     process.exit(failed > 0 ? 1 : 0);
   }

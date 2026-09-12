@@ -7,6 +7,9 @@ const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS channels (
     name TEXT PRIMARY KEY,
     description TEXT,
+    pinned_text TEXT,
+    pinned_by TEXT,
+    pinned_at TIMESTAMP,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
   );
 
@@ -55,6 +58,38 @@ const INDEX_SQL = `
 const MIGRATION_SESSION_TOKEN_PG = `ALTER TABLE instances ADD COLUMN IF NOT EXISTS session_token TEXT`;
 const MIGRATION_SESSION_TOKEN_SQLITE = `ALTER TABLE instances ADD COLUMN session_token TEXT`;
 
+// Migration: add the pinned-text columns to existing channels tables
+const MIGRATION_CHANNEL_PIN_PG = [
+  `ALTER TABLE channels ADD COLUMN IF NOT EXISTS pinned_text TEXT`,
+  `ALTER TABLE channels ADD COLUMN IF NOT EXISTS pinned_by TEXT`,
+  `ALTER TABLE channels ADD COLUMN IF NOT EXISTS pinned_at TIMESTAMP`,
+];
+const MIGRATION_CHANNEL_PIN_SQLITE = [
+  `ALTER TABLE channels ADD COLUMN pinned_text TEXT`,
+  `ALTER TABLE channels ADD COLUMN pinned_by TEXT`,
+  `ALTER TABLE channels ADD COLUMN pinned_at TIMESTAMP`,
+];
+
+/**
+ * Upper bound on a channel's pinned text. The pin is metadata a peer pulls into its
+ * context on purpose, so it stays a form that is cheap to read rather than a document.
+ */
+export const PIN_MAX_BYTES = 4096;
+
+function assertPinWithinLimit(text) {
+  if (Buffer.byteLength(String(text), "utf8") > PIN_MAX_BYTES) {
+    throw new Error(`Pinned text exceeds ${PIN_MAX_BYTES} bytes.`);
+  }
+}
+
+// Channel listings name their columns instead of selecting all of them: pinned text is
+// read one channel at a time, through getChannelPin, and a listing carries only the fact
+// that a pin exists. The flag is an int in both backends so clients read one shape.
+const channelColumnsSqlite = (prefix = "") =>
+  `${prefix}name, ${prefix}description, ${prefix}created_at, (${prefix}pinned_text IS NOT NULL) as has_pin`;
+const channelColumnsPg = (prefix = "") =>
+  `${prefix}name, ${prefix}description, ${prefix}created_at, (${prefix}pinned_text IS NOT NULL)::int as has_pin`;
+
 /**
  * Normalize channel names: lowercase, replace spaces/underscores with hyphens,
  * strip non-alphanumeric (except hyphens), collapse multiple hyphens.
@@ -88,6 +123,9 @@ class SqliteDB {
     this.db.exec(INDEX_SQL);
     // Migration: add session_token if missing (existing databases)
     try { this.db.exec(MIGRATION_SESSION_TOKEN_SQLITE); } catch { /* column already exists */ }
+    for (const statement of MIGRATION_CHANNEL_PIN_SQLITE) {
+      try { this.db.exec(statement); } catch { /* column already exists */ }
+    }
     this.db.prepare(`INSERT OR IGNORE INTO channels (name, description) VALUES ('general', 'Default channel for cross-instance communication')`).run();
   }
 
@@ -132,12 +170,30 @@ class SqliteDB {
   }
 
   listChannels() {
-    return this.db.prepare(`SELECT * FROM channels ORDER BY name`).all();
+    return this.db.prepare(`SELECT ${channelColumnsSqlite()} FROM channels ORDER BY name`).all();
+  }
+
+  setChannelPin(channel, text, setBy) {
+    assertPinWithinLimit(text);
+    this.db.prepare(
+      `INSERT INTO channels (name, pinned_text, pinned_by, pinned_at)
+       VALUES (?, ?, ?, datetime('now'))
+       ON CONFLICT(name) DO UPDATE SET
+         pinned_text = excluded.pinned_text,
+         pinned_by = excluded.pinned_by,
+         pinned_at = excluded.pinned_at`
+    ).run(channel, text, setBy);
+  }
+
+  getChannelPin(channel) {
+    return this.db.prepare(
+      `SELECT name, pinned_text, pinned_by, pinned_at FROM channels WHERE name = ?`
+    ).get(channel) || null;
   }
 
   listChannelsWithActivity() {
     return this.db.prepare(`
-      SELECT c.*,
+      SELECT ${channelColumnsSqlite("c.")},
         COALESCE(s.message_count, 0) as message_count,
         s.last_message_at,
         s.active_senders
@@ -157,7 +213,7 @@ class SqliteDB {
   findChannels(query) {
     const pattern = `%${query}%`;
     return this.db.prepare(`
-      SELECT c.*,
+      SELECT ${channelColumnsSqlite("c.")},
         COALESCE(s.message_count, 0) as message_count,
         s.last_message_at
       FROM channels c
@@ -243,6 +299,7 @@ class SqliteDB {
     this.db.prepare(`DELETE FROM shared_data WHERE key = ?`).run(key);
   }
 
+  // Channels are never swept: a channel and its pinned text outlive the messages posted in it.
   cleanup(maxAgeDays = 7) {
     const interval = `-${maxAgeDays} days`;
     const msgs = this.db.prepare(`DELETE FROM messages WHERE created_at < datetime('now', ?)`).run(interval);
@@ -293,6 +350,9 @@ class PostgresDB {
     await this.pool.query(SEED_SQL);
     // Migration: add session_token if missing (existing databases)
     await this.pool.query(MIGRATION_SESSION_TOKEN_PG).catch(() => {});
+    for (const statement of MIGRATION_CHANNEL_PIN_PG) {
+      await this.pool.query(statement).catch(() => {});
+    }
   }
 
   async getInstance(instanceId) {
@@ -343,13 +403,34 @@ class PostgresDB {
   }
 
   async listChannels() {
-    const result = await this.pool.query(`SELECT * FROM channels ORDER BY name`);
+    const result = await this.pool.query(`SELECT ${channelColumnsPg()} FROM channels ORDER BY name`);
     return result.rows;
+  }
+
+  async setChannelPin(channel, text, setBy) {
+    assertPinWithinLimit(text);
+    await this.pool.query(
+      `INSERT INTO channels (name, pinned_text, pinned_by, pinned_at)
+       VALUES ($1, $2, $3, NOW())
+       ON CONFLICT(name) DO UPDATE SET
+         pinned_text = EXCLUDED.pinned_text,
+         pinned_by = EXCLUDED.pinned_by,
+         pinned_at = EXCLUDED.pinned_at`,
+      [channel, text, setBy]
+    );
+  }
+
+  async getChannelPin(channel) {
+    const result = await this.pool.query(
+      `SELECT name, pinned_text, pinned_by, pinned_at FROM channels WHERE name = $1`,
+      [channel]
+    );
+    return result.rows[0] || null;
   }
 
   async listChannelsWithActivity() {
     const result = await this.pool.query(`
-      SELECT c.*,
+      SELECT ${channelColumnsPg("c.")},
         COALESCE(s.message_count, 0)::int as message_count,
         s.last_message_at,
         s.active_senders
@@ -370,7 +451,7 @@ class PostgresDB {
   async findChannels(query) {
     const pattern = `%${query}%`;
     const result = await this.pool.query(`
-      SELECT c.*,
+      SELECT ${channelColumnsPg("c.")},
         COALESCE(s.message_count, 0)::int as message_count,
         s.last_message_at
       FROM channels c
@@ -475,6 +556,7 @@ class PostgresDB {
     await this.pool.query(`DELETE FROM shared_data WHERE key = $1`, [key]);
   }
 
+  // Channels are never swept: a channel and its pinned text outlive the messages posted in it.
   async cleanup(maxAgeDays = 7) {
     const interval = `${maxAgeDays} days`;
     const msgs = await this.pool.query(`DELETE FROM messages WHERE created_at < NOW() - INTERVAL '1 day' * $1`, [maxAgeDays]);

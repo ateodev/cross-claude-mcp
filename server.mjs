@@ -13,6 +13,10 @@
  * - GET  /sse -- Legacy SSE transport (backward compat)
  * - POST /messages -- Legacy SSE message endpoint
  * - GET  /health -- Health check
+ *
+ * One-shot mode:
+ * - node server.mjs --cleanup runs the retention sweep once against the configured
+ *   database, prints what it removed and exits (exit 1 when the sweep fails)
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -20,6 +24,30 @@ import { createDB } from "./db.mjs";
 import { registerTools } from "./tools.mjs";
 import { createRestRouter } from "./rest-api.mjs";
 import { InviteCodeOAuthProvider, createAuthorizeSubmitHandler } from "./auth.mjs";
+
+// --- Retention ---
+
+const CLEANUP_DAYS = parseInt(process.env.CLEANUP_DAYS) || 7;
+const CLEANUP_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
+
+/**
+ * Delete messages, instances and shared data past the retention window. Channels are not
+ * swept, so a channel and its pinned text outlive the messages posted in it.
+ * Returns the counts, or null when the sweep failed.
+ */
+async function runCleanup(db) {
+  try {
+    const result = await db.cleanup(CLEANUP_DAYS);
+    const total = result.messages + result.instances + result.shared_data;
+    if (total > 0) {
+      console.log(`[CLEANUP] Removed ${result.messages} messages, ${result.instances} instances, ${result.shared_data} shared data (older than ${CLEANUP_DAYS} days)`);
+    }
+    return result;
+  } catch (err) {
+    console.error(`[CLEANUP] Error: ${err.message}`);
+    return null;
+  }
+}
 
 // --- Transport: Stdio (local) ---
 
@@ -346,25 +374,10 @@ li{margin:4px 0}</style></head>
 
   // --- Start ---
 
-  // --- Auto-cleanup: delete data older than 7 days ---
+  // --- Auto-cleanup: delete data past the retention window ---
 
-  const CLEANUP_DAYS = parseInt(process.env.CLEANUP_DAYS) || 7;
-  const CLEANUP_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
-
-  async function runCleanup() {
-    try {
-      const result = await db.cleanup(CLEANUP_DAYS);
-      const total = result.messages + result.instances + result.shared_data;
-      if (total > 0) {
-        console.log(`[CLEANUP] Removed ${result.messages} messages, ${result.instances} instances, ${result.shared_data} shared data (older than ${CLEANUP_DAYS} days)`);
-      }
-    } catch (err) {
-      console.error(`[CLEANUP] Error: ${err.message}`);
-    }
-  }
-
-  await runCleanup();
-  const cleanupInterval = setInterval(runCleanup, CLEANUP_INTERVAL_MS);
+  await runCleanup(db);
+  const cleanupInterval = setInterval(() => runCleanup(db), CLEANUP_INTERVAL_MS);
 
   // Graceful shutdown: clean up intervals
   const shutdown = () => {
@@ -395,6 +408,15 @@ li{margin:4px 0}</style></head>
 // --- Main ---
 
 const db = await createDB();
+
+if (process.argv.includes("--cleanup")) {
+  const result = await runCleanup(db);
+  if (!result) process.exit(1);
+  if (result.messages + result.instances + result.shared_data === 0) {
+    console.log(`[CLEANUP] Nothing older than ${CLEANUP_DAYS} days to remove.`);
+  }
+  process.exit(0);
+}
 
 if (process.env.PORT) {
   await startHTTP(db);
