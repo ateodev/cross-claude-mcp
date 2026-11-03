@@ -23,4 +23,4 @@ there is no obvious work name — never the bare prefix.
   and its per-machine section carries this box's paths and commands. Deliberately not
   restated here.
 - **Coordination expected on a fresh session?** Re-arm the bus watcher (skill, *This
-  machine*) — it survives context compaction but not a session close.
+  machine*). It wakes you once per batch of messages, and you re-arm it on every wake.

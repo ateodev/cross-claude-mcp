@@ -1,11 +1,26 @@
 // cross-claude bus watcher. Polls the cross-claude-mcp REST API and prints ONE
-// line per NEW message not sent by this instance. Intended to be run under
-// Claude Code's `Monitor` tool (persistent): each printed line becomes an
-// event/notification, so the main loop is woken ONLY when a real message
-// arrives — no fixed-interval chat spam. Between messages it polls quietly in
-// the background. Re-arm with:
-//   Monitor(persistent:true, command:'node /path/to/bus-watch.mjs --instance <prefix>.<suffix>')
-// Use `--once` for a single poll round (testing).
+// line per NEW message not sent by this instance. Between messages it polls
+// quietly, so a session is woken only when a real message arrives.
+//
+// How it runs:
+//   --exit-on-message  as a background command that ENDS on the first poll round
+//                      that found messages, after printing every one of them. The
+//                      session wakes once per batch on the command's completion,
+//                      never on a timer, and re-arms with --resume.
+//   (neither flag)     as an endless stream, one event per line, for a host that
+//                      keeps a streaming watch alive.
+//   --resume           start from the read position the last run of this instance id
+//                      saved, with the channels that woke it, so nothing that arrived
+//                      between two runs is missed, in any channel. Without it the
+//                      watcher starts from the newest message. Pass it on a RE-arm
+//                      only: on a session's first arm, a position saved under the
+//                      same id by an earlier session would replay its messages.
+//   --once             a single poll round, then exit 0 (a connectivity test).
+//
+// Exit codes: 0 after printing messages under --exit-on-message, after --once, or
+// when stopped by a signal, so a 0 with no message line means something outside
+// stopped it. 1 means it stopped itself over a fault, after printing one line that
+// says so and writing the reason to its log. 2 means --instance was missing.
 //
 // Configuration — all env vars are optional on a machine that has the cross-claude
 // MCP server configured, because the bus URL and token are read from that config.
@@ -89,6 +104,8 @@ if (!INSTANCE || INSTANCE.startsWith('--')) {
 }
 const MAXLEN   = 600;
 const ONCE     = process.argv.includes('--once');
+const EXIT_ON_MESSAGE = process.argv.includes('--exit-on-message');
+const RESUME   = process.argv.includes('--resume');
 
 // Per-session channel choices, on argv for the same reason the instance id is: they belong to what
 // THIS session is doing, not to the machine. --mute names channels that never emit however the
@@ -147,6 +164,50 @@ for (const sig of ['SIGTERM', 'SIGINT', 'SIGBREAK', 'SIGHUP']) {
   try { process.on(sig, () => { note(`stopped by ${sig}`); process.exit(0); }); } catch { /* not every signal exists on every platform */ }
 }
 
+// --- The read position, per channel, that one run hands to the next, together with the channels
+// that wake the session, so a resumed run continues exactly as the last one stood: a participant
+// verdict re-derived from history would forget a channel whose own post has aged out of it. It is
+// written after every round that moved it, so a run stopped from outside still leaves the last
+// position it reached. A position that cannot be written, or one that cannot be read back, stops
+// the watcher: either would lose messages in silence between two runs.
+const CURSOR = path.join(path.dirname(LOG), `bus-watch-${INSTANCE}.cursor.json`);
+let savedText = '';
+function saveCursor() {
+  const channels = last;
+  const emitting = Object.keys(part).filter(c => part[c]).sort();
+  const text = JSON.stringify({ channels, emitting });
+  if (text === savedText) return;
+  try {
+    fs.mkdirSync(path.dirname(CURSOR), { recursive: true });
+    fs.writeFileSync(CURSOR + '.tmp', JSON.stringify({ instance: INSTANCE, saved: new Date().toISOString(), channels, emitting }));
+    fs.renameSync(CURSOR + '.tmp', CURSOR);
+  } catch (err) { fatal(`the read position could not be saved to ${CURSOR}`, err); }
+  savedText = text;
+}
+function loadCursor() {
+  let text;
+  try { text = fs.readFileSync(CURSOR, 'utf8'); }
+  catch (err) {
+    if (err.code !== 'ENOENT') fatal(`the saved read position in ${CURSOR} could not be read`, err);
+    note('no saved read position for this id, starting from the newest message');
+    return null;
+  }
+  try {
+    const { channels, emitting = [] } = JSON.parse(text);
+    if (!channels || typeof channels !== 'object' || Array.isArray(channels)) throw new Error('no channels in the file');
+    for (const [ch, id] of Object.entries(channels)) {
+      if (!Number.isInteger(id) || id < 0) throw new Error(`channel ${ch} has no valid position`);
+    }
+    if (!Array.isArray(emitting) || emitting.some(c => typeof c !== 'string')) throw new Error('the waking channels are not a list of names');
+    return { channels, emitting: new Set(emitting) };
+  } catch (err) { fatal(`the saved read position in ${CURSOR} is damaged; delete it to start from the newest message`, err); }
+}
+// A run that does not resume starts from the newest message, and a position it replaces is gone,
+// so the replacement is said where the session will look for it.
+function warnUnresumed() {
+  if (!RESUME && fs.existsSync(CURSOR)) note(`a saved read position exists and is not resumed, so messages since it are skipped; pass --resume to continue from it`);
+}
+
 // Reads either config shape: a Claude client config, whose cross-claude MCP entry
 // carries both the bus URL and the auth header, or an env file with BUS_URL= /
 // MCP_API_KEY=. An unreadable file yields nothing rather than throwing — another
@@ -194,15 +255,18 @@ async function getJSON(url) {
 }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const last = {};          // channel -> last seen message id
-let started = false;      // startup baselining done?
+let started = false;      // has the channel list been read once?
+let emitted = 0;          // message lines printed in the current round
+const resumed = RESUME ? loadCursor() : null;  // { channels: position per channel, emitting: Set }
 
 const part = {};  // channel -> true (emit) / false (silent scan); absent = unclassified, retry
 const away = new Set();  // channels whose last poll the bus did not answer, so the note is printed once
+const unbaselined = new Set();  // channels whose newest message could not be read yet
 
 // A watcher that cannot print its line wakes nobody, and from outside that reads exactly like
 // an idle bus. A stdout that stops accepting writes therefore stops the watcher, loudly.
 process.stdout.on('error', err => {
-  process.stderr.write(`bus-watch: Stopped, a message line could not be printed. ${err.name}: ${err.message}\n`);
+  note(`Stopped, a message line could not be printed. ${err.name}: ${err.message}`);
   process.exit(1);
 });
 
@@ -217,8 +281,11 @@ async function listChannels() {
 }
 
 async function headOf(ch) {
-  try { const j = await getJSON(`${BASE}/api/messages/${enc(ch)}?limit=1`); return j.last_id ?? 0; }
-  catch (err) { if (err instanceof BusUnreachable) return 0; throw err; }
+  // A window rather than one message, since the newest by time may not be the newest by id.
+  // null when the bus did not answer: a channel is never baselined at 0 by accident, which would
+  // replay its whole history.
+  try { return newest(byId(await getJSON(`${BASE}/api/messages/${enc(ch)}?limit=50`)), 0); }
+  catch (err) { if (err instanceof BusUnreachable) return null; throw err; }
 }
 
 async function classify(ch) {
@@ -228,6 +295,7 @@ async function classify(ch) {
   if (MUTED.has(ch)) return false;
   if (ALWAYS.has(ch)) return true;
   if (FILTER !== 'participant' || ch === 'general') return true;
+  if (resumed && resumed.emitting.has(ch)) return true;
   try {
     const j = await getJSON(`${BASE}/api/messages/${enc(ch)}?limit=500`);
     return (j.messages || []).some(m => m.sender === INSTANCE);
@@ -241,10 +309,18 @@ async function syncChannels() {
   catch (err) { if (err instanceof BusUnreachable) return Object.keys(last); throw err; }
   for (const ch of names) {
     if (!(ch in last)) {
-      if (!started) {
-        last[ch] = await headOf(ch);  // startup: baseline at head — no history replay
+      if (resumed && ch in resumed.channels) {
+        last[ch] = resumed.channels[ch];  // resume: continue exactly where the last run stopped
+      } else if ((!started && !resumed) || unbaselined.has(ch)) {
+        // startup: baseline at head, no history replay. A channel whose head could not be read
+        // stays out of the watch until it can, rather than starting from its beginning.
+        const head = await headOf(ch);
+        if (head === null) { unbaselined.add(ch); continue; }
+        unbaselined.delete(ch);
+        last[ch] = head;
       } else {
-        last[ch] = 0;  // appeared mid-run: brand new, deliver from the beginning
+        // Appeared mid-run, or since the saved position: brand new, deliver from the beginning.
+        last[ch] = 0;
         note(`new channel discovered: ${ch}`);
       }
     }
@@ -253,33 +329,47 @@ async function syncChannels() {
       if (verdict !== null) part[ch] = verdict;
     }
   }
+  // Only a list the bus answered ends startup, so a channel missing from a failed first read is
+  // still baselined at head later rather than replayed from its beginning.
+  started = true;
   return Object.keys(last);
+}
+
+// The bus orders a channel's messages by time, and two posted within one tick of its clock come
+// back in either order, so its own last_id can name a message older than one it just returned.
+// The read position is therefore the highest id actually received, and messages print in id order.
+function byId(j) {
+  return (j.messages || []).slice().sort((a, b) => (a.id ?? 0) - (b.id ?? 0));
+}
+function newest(msgs, floor) {
+  return msgs.reduce((top, m) => Math.max(top, m.id ?? 0), floor);
 }
 
 function emit(ch, m) {
   const c = String(m.content).replace(/\s+/g, ' ').trim().slice(0, MAXLEN);
   // one line == one event/notification
   console.log(`🔔 cross-claude [${ch} #${m.id} ${m.message_type}] ${m.sender}: ${c}`);
+  emitted++;
 }
 
 async function poll(ch) {
+  // An unclassified channel is not polled: a silent scan would move its position past messages
+  // that a participant verdict, once the bus answers, should have printed.
+  if (!(ch in part)) return;
   try {
     if (part[ch]) {
       // participating channel: emit every new peer message (server drops our own)
-      const j = await getJSON(`${BASE}/api/messages/${enc(ch)}?after_id=${last[ch]}&instance_id=${enc(INSTANCE)}`);
-      const msgs = j.messages || [];
-      if (msgs.length) { for (const m of msgs) emit(ch, m); last[ch] = j.last_id ?? last[ch]; }
+      const msgs = byId(await getJSON(`${BASE}/api/messages/${enc(ch)}?after_id=${last[ch]}&instance_id=${enc(INSTANCE)}`));
+      for (const m of msgs) emit(ch, m);
+      last[ch] = newest(msgs, last[ch]);
     } else {
       // silent scan: same poll WITHOUT instance_id so our own sends are visible;
       // our first own message graduates the channel (and emits peers' messages after it)
-      const j = await getJSON(`${BASE}/api/messages/${enc(ch)}?after_id=${last[ch]}`);
-      const msgs = j.messages || [];
+      const msgs = byId(await getJSON(`${BASE}/api/messages/${enc(ch)}?after_id=${last[ch]}`));
       const mine = msgs.filter(m => m.sender === INSTANCE).map(m => m.id ?? 0);
-      // Graduation cannot UN-MUTE a channel. Mute is the session's own instruction and it outranks
-      // every verdict including this one, because the ordinary way a session touches a muted channel
-      // is to POST in it: announcing a status in the rendezvous channel it deliberately does not want
-      // waking on is exactly that. Without this line the mute lasts only until the session's own next
-      // post there, and it ends silently, looking like a mute that was never applied.
+      // Graduation never lifts a mute. Mute is the session's own instruction and it outranks every
+      // verdict including this one, because the ordinary way a session touches a muted channel is to
+      // POST in it, such as a status in the rendezvous channel it does not want waking on.
       if (mine.length && !MUTED.has(ch)) {
         part[ch] = true;
         note(`now participating in channel: ${ch}`);
@@ -288,7 +378,7 @@ async function poll(ch) {
           if ((m.id ?? 0) > cutoff && m.sender !== INSTANCE) emit(ch, m);
         }
       }
-      if (msgs.length) last[ch] = j.last_id ?? last[ch];
+      last[ch] = newest(msgs, last[ch]);
     }
     if (away.has(ch)) {
       away.delete(ch);
@@ -308,27 +398,43 @@ async function poll(ch) {
     // Anything else is the watcher failing at its own job. Swallowed, it leaves a process
     // that polls forever and wakes nobody, alive from every angle and silent for a reason
     // no reader can see. So it stops here and names what went wrong.
-    process.stderr.write(`bus-watch: Stopped, polling channel ${ch} failed. ${err.name}: ${err.message}\n`);
-    process.exit(1);
+    fatal(`polling channel ${ch} failed`, err);
   }
 }
 
 await syncChannels();
-started = true;
-// readiness note on stderr and in the log (Monitor: stderr -> output file, NOT an event line)
+// readiness note on stderr and in the log, never an event line
 const watched = Object.keys(last).filter(c => part[c]).sort();
 const silent  = Object.keys(last).filter(c => !part[c]).sort();
-note(`armed (filter=${FILTER}) emitting=${watched.join(',')} silent-scan=${silent.join(',')} baselines=${JSON.stringify(last)}`);
+note(`armed (filter=${FILTER}${EXIT_ON_MESSAGE ? ', exit-on-message' : ''}${resumed ? ', resumed' : ''}) emitting=${watched.join(',')} silent-scan=${silent.join(',')} baselines=${JSON.stringify(last)}`);
+warnUnresumed();
+if (started) saveCursor();
 
-if (ONCE) { for (const ch of Object.keys(last)) await poll(ch); process.exit(0); }
+// A pipe on some platforms takes writes asynchronously, so printed lines are flushed before the
+// position that covers them is saved: a run stopped in between prints them again rather than never.
+const flushed = () => new Promise(resolve => process.stdout.write('', resolve));
+
+if (ONCE) {
+  for (const ch of Object.keys(last)) await poll(ch);
+  await flushed();
+  saveCursor();
+  process.exit(0);
+}
 while (true) {
   // Everything inside poll() and syncChannels() already tolerates a bus that is briefly away, so a
   // fault arriving HERE is the watcher itself and it stops the watch. This catch exists to put the
   // reason in the log, never to swallow it: a caught fault that let the loop continue would be the
   // silent wedge this whole file exists to prevent.
+  emitted = 0;
   try {
     const names = await syncChannels();
     for (const ch of names) await poll(ch);
   } catch (e) { fatal('a poll round failed', e); }
+  if (emitted) await flushed();
+  if (started) saveCursor();
+  if (EXIT_ON_MESSAGE && emitted) {
+    note(`woke the session with ${emitted} message(s), exiting`);
+    process.exit(0);
+  }
   await sleep(POLL_MS);
 }

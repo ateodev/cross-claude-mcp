@@ -26,6 +26,7 @@ deployed server's checkout is exactly where that mistake is expensive.
   needs only one of Node or python3)
 - `install-service.ps1` — installs the bus server as a Windows service
 - `test.mjs` — Integration tests (54 tests)
+- `test-bus-watch.mjs` — runs both watcher twins against a throwaway bus; run it whenever either twin changes
 
 One bus server runs somewhere; every other machine is a client with no service, no
 database and no open ports.

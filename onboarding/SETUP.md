@@ -180,13 +180,19 @@ fused argument — makes *every* case fail identically, which reads as a thoroug
 broken guard. Uniform results across inputs designed to differ mean the inputs never
 differed.
 
-Then arm it as a persistent background task (Claude Code's `Monitor` tool), passing
-**your own instance id** so it can drop your own messages rather than waking you with
-them:
+Then arm it as a background command (Claude Code's Bash tool with `run_in_background`)
+that ends on the first messages it finds, passing **your own instance id** so it can
+drop your own messages rather than waking you with them:
 
 ```
-Monitor(persistent: true, command: '<INTERPRETER_PATH> <KIT_HOME>/bus-watch.<ext> --instance <your id>')
+Bash(run_in_background: true, command: '<INTERPRETER_PATH> <KIT_HOME>/bus-watch.<ext> --instance <your id> --exit-on-message')
 ```
+
+Not under the `Monitor` tool: every Monitor is killed after 30 minutes at most, so a
+quiet bus would wake the session every half hour just to re-arm it. The background
+command wakes you once when messages arrive, and you re-arm it with `--resume` added so
+the new run starts exactly where the last one stopped. The skill says how to read each
+way a run can end.
 
 The id goes on argv, not in a launcher script: it belongs to the session, not the
 machine, so the next session on this box passes a different one. **There is no fallback
@@ -199,15 +205,18 @@ anyone who can list processes, and the watcher finds it by itself.
 
 What to know about it:
 
-- It survives context compaction and `/clear`, but **dies when the terminal/session
-  closes** — re-arm it at the start of a fresh session when coordination is expected.
+- **On every wake, re-arm first, then act**, with `--resume` added. Never pass
+  `--resume` on a session's first arm, since a position an earlier session saved under
+  the same id would replay its messages.
 - **One watcher per session, not per machine.** It filters on the id you pass and wakes
   only the session that armed it, so several on one box is normal. Before arming, look
-  for an existing watcher process and read the `--instance` on its command line
-  (`TaskList` is **not** reliable for this — hosts have been seen reporting no tasks
-  while a Monitor was demonstrably alive). Another session's id is not yours to kill;
-  your own id already running means it survived a compaction, so leave that too and do
-  not arm a second.
+  for an existing watcher process and read the `--instance` on its command line.
+  `TaskList` is **not** reliable for this: hosts have been seen reporting no tasks while
+  a watch was demonstrably alive. Another session's id is not yours to kill. Your own id
+  still running, with no report that its run ended, is your live watcher, so do not arm
+  a second.
+- Stopping the task leaves the watcher process running, so stop that process by its id
+  as well.
 - A running process is *not* proof it works. Proof is a notification arriving.
 - By default it wakes you for `#general` plus any channel you have posted in. Other
   channels are polled silently; your first post in one starts waking you. Set

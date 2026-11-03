@@ -1,12 +1,30 @@
 #!/usr/bin/env python3
 """Event-driven cross-claude bus watcher (python3 twin of bus-watch.mjs).
 
-Polls the bus REST API and prints ONE stdout line per NEW message so a
-persistent Claude Code Monitor wakes the instance only on real messages (no
-timer/context spam). Survives context compaction (Monitor is a session-level
-background task); dies only on terminal/session close -> re-arm on a fresh
-session. Use this on machines without Node; bus-watch.mjs is the Node twin.
+Polls the bus REST API and prints ONE stdout line per NEW message not sent by this
+instance. Between messages it polls quietly, so a session is woken only when a real
+message arrives. Use this on machines without Node; bus-watch.mjs is the Node twin.
 Keep the two implementations behaviorally identical.
+
+How it runs:
+  --exit-on-message  as a background command that ENDS on the first poll round that
+                     found messages, after printing every one of them. The session
+                     wakes once per batch on the command's completion, never on a
+                     timer, and re-arms with --resume.
+  (neither flag)     as an endless stream, one event per line, for a host that keeps
+                     a streaming watch alive.
+  --resume           start from the read position the last run of this instance id
+                     saved, with the channels that woke it, so nothing that arrived
+                     between two runs is missed, in any channel. Without it the
+                     watcher starts from the newest message. Pass it on a RE-arm only:
+                     on a session's first arm, a position saved under the same id by
+                     an earlier session would replay its messages.
+  --once             a single poll round, then exit 0 (a connectivity test).
+
+Exit codes: 0 after printing messages under --exit-on-message, after --once, or when
+stopped by a signal, so a 0 with no message line means something outside stopped it.
+1 means it stopped itself over a fault, after printing one line that says so and
+writing the reason to its log. 2 means --instance was missing.
 
 Configuration -- all env vars are optional on a machine that has the cross-claude
 MCP server configured, because the bus URL and token are read from that config.
@@ -66,9 +84,10 @@ Mute wins over always. Both are still POLLED, like any other channel.
 
 Usage:
   python3 bus-watch.py --instance <prefix>.<suffix> --once   # baseline + one poll, armed line on stderr, exit 0 (connectivity test)
-  python3 bus-watch.py --instance <prefix>.<suffix>          # persistent poll loop; for the Monitor tool
+  python3 bus-watch.py --instance <prefix>.<suffix> --exit-on-message [--resume]   # ends on the first messages
+  python3 bus-watch.py --instance <prefix>.<suffix>          # endless poll loop, one event per line
 """
-import json, os, time, sys, re, signal, traceback, urllib.request
+import json, os, time, sys, re, signal, traceback, http.client, urllib.request
 from datetime import datetime, timezone
 from urllib.parse import quote as enc  # channel names and ids are URL components
 
@@ -106,6 +125,8 @@ if not INSTANCE or INSTANCE.startswith("--"):
     sys.exit(2)
 MAXLEN   = 600
 ONCE     = "--once" in sys.argv
+EXIT_ON_MESSAGE = "--exit-on-message" in sys.argv
+RESUME   = "--resume" in sys.argv
 
 # --- Failure reporting, the same contract as the node twin. This watcher IS an unattended
 # session's liveness mechanism, so its own death must never be silent: a watcher that is gone looks
@@ -162,6 +183,66 @@ for _sig in ("SIGTERM", "SIGINT", "SIGBREAK", "SIGHUP"):
         signal.signal(getattr(signal, _sig), _on_signal)
     except (AttributeError, ValueError, OSError):
         pass  # not every signal exists on every platform
+
+# --- The read position, per channel, that one run hands to the next, together with the channels
+# that wake the session, so a resumed run continues exactly as the last one stood: a participant
+# verdict re-derived from history would forget a channel whose own post has aged out of it. It is
+# written after every round that moved it, so a run stopped from outside still leaves the last
+# position it reached. A position that cannot be written, or one that cannot be read back, stops
+# the watcher: either would lose messages in silence between two runs.
+CURSOR = os.path.join(os.path.dirname(LOG), f"bus-watch-{INSTANCE}.cursor.json")
+_saved_text = ""
+
+
+def save_cursor():
+    global _saved_text
+    channels = dict(last)
+    emitting = sorted(c for c in part if part[c])
+    text = json.dumps({"channels": channels, "emitting": emitting}, sort_keys=True)
+    if text == _saved_text:
+        return
+    try:
+        os.makedirs(os.path.dirname(CURSOR), exist_ok=True)
+        with open(CURSOR + ".tmp", "w", encoding="utf-8") as fh:
+            json.dump({"instance": INSTANCE, "saved": datetime.now(timezone.utc).isoformat(),
+                       "channels": channels, "emitting": emitting}, fh)
+        os.replace(CURSOR + ".tmp", CURSOR)
+    except Exception as err:
+        fatal(f"the read position could not be saved to {CURSOR}", err)
+    _saved_text = text
+
+
+def load_cursor():
+    try:
+        with open(CURSOR, "r", encoding="utf-8") as fh:
+            text = fh.read()
+    except FileNotFoundError:
+        note("no saved read position for this id, starting from the newest message")
+        return None
+    except Exception as err:
+        fatal(f"the saved read position in {CURSOR} could not be read", err)
+    try:
+        data = json.loads(text)
+        channels = data.get("channels")
+        emitting = data.get("emitting", [])
+        if not isinstance(channels, dict):
+            raise ValueError("no channels in the file")
+        for ch, pos in channels.items():
+            if type(pos) is not int or pos < 0:
+                raise ValueError(f"channel {ch} has no valid position")
+        if not isinstance(emitting, list) or any(not isinstance(c, str) for c in emitting):
+            raise ValueError("the waking channels are not a list of names")
+        return {"channels": channels, "emitting": set(emitting)}
+    except Exception as err:
+        fatal(f"the saved read position in {CURSOR} is damaged; delete it to start from the newest message", err)
+
+
+# A run that does not resume starts from the newest message, and a position it replaces is gone,
+# so the replacement is said where the session will look for it.
+def warn_unresumed():
+    if not RESUME and os.path.exists(CURSOR):
+        note("a saved read position exists and is not resumed, so messages since it are skipped; "
+             "pass --resume to continue from it")
 
 # Per-session channel choices, on argv for the same reason the instance id is: they belong to what
 # THIS session is doing, not to the machine. --mute names channels that never emit however the
@@ -226,25 +307,39 @@ def get_json(url):
         req = urllib.request.Request(url, headers=HEADERS)
         with urllib.request.urlopen(req, timeout=15) as r:
             return json.load(r)
-    except (OSError, json.JSONDecodeError) as err:
+    except (OSError, ValueError, http.client.HTTPException) as err:
         raise BusUnreachable(f"{type(err).__name__}: {err}") from err
 
 last = {}        # channel -> last seen message id
-started = False  # startup baselining done?
+started = False  # has the channel list been read once?
+emitted = 0      # message lines printed in the current round
+resumed = load_cursor() if RESUME else None  # {"channels": position per channel, "emitting": set}
 
 part = {}  # channel -> True (emit) / False (silent scan); absent = unclassified, retry
 away = set()  # channels whose last poll the bus did not answer, so the note is printed once
+unbaselined = set()  # channels whose newest message could not be read yet
 
 def list_channels():
     j = get_json(f"{BASE}/api/channels")
     return [c.get("name") for c in (j.get("channels") or []) if c.get("name")]
 
+# The bus orders a channel's messages by time, and two posted within one tick of its clock come
+# back in either order, so its own last_id can name a message older than one it just returned.
+# The read position is therefore the highest id actually received, and messages print in id order.
+def by_id(j):
+    return sorted(j.get("messages") or [], key=lambda m: m.get("id") or 0)
+
+def newest(ms, floor):
+    return max([floor] + [m.get("id") or 0 for m in ms])
+
 def head_of(ch):
+    # A window rather than one message, since the newest by time may not be the newest by id.
+    # None when the bus did not answer: a channel is never baselined at 0 by accident, which would
+    # replay its whole history.
     try:
-        j = get_json(f"{BASE}/api/messages/{enc(ch)}?limit=1")
-        return j.get("last_id") or 0
+        return newest(by_id(get_json(f"{BASE}/api/messages/{enc(ch)}?limit=50")), 0)
     except BusUnreachable:
-        return 0
+        return None
 
 def classify(ch):
     # -> True/False participant verdict, or None on transient error (retry next round).
@@ -256,6 +351,8 @@ def classify(ch):
         return True
     if FILTER != "participant" or ch == "general":
         return True
+    if resumed is not None and ch in resumed["emitting"]:
+        return True
     try:
         j = get_json(f"{BASE}/api/messages/{enc(ch)}?limit=500")
         return any(m.get("sender") == INSTANCE for m in (j.get("messages") or []))
@@ -264,24 +361,39 @@ def classify(ch):
 
 def sync_channels():
     # Discover channels each round; tolerate transient failures (keep last known set).
+    global started
     try:
         names = list_channels()
     except BusUnreachable:
         return list(last.keys())
     for ch in names:
         if ch not in last:
-            if not started:
-                last[ch] = head_of(ch)  # startup: baseline at head -- no history replay
+            if resumed is not None and ch in resumed["channels"]:
+                last[ch] = resumed["channels"][ch]  # resume: continue exactly where the last run stopped
+            elif (not started and resumed is None) or ch in unbaselined:
+                # startup: baseline at head, no history replay. A channel whose head could not be read
+                # stays out of the watch until it can, rather than starting from its beginning.
+                head = head_of(ch)
+                if head is None:
+                    unbaselined.add(ch)
+                    continue
+                unbaselined.discard(ch)
+                last[ch] = head
             else:
-                last[ch] = 0  # appeared mid-run: brand new, deliver from the beginning
+                # Appeared mid-run, or since the saved position: brand new, deliver from the beginning.
+                last[ch] = 0
                 note(f"new channel discovered: {ch}")
         if ch not in part:
             verdict = classify(ch)
             if verdict is not None:
                 part[ch] = verdict
+    # Only a list the bus answered ends startup, so a channel missing from a failed first read is
+    # still baselined at head later rather than replayed from its beginning.
+    started = True
     return list(last.keys())
 
 def emit(ch, m):
+    global emitted
     c = re.sub(r"\s+", " ", str(m.get("content", ""))).strip()[:MAXLEN]
     line = (f"\U0001f514 cross-claude [{ch} #{m.get('id')} {m.get('message_type')}] "
             f"{m.get('sender')}: {c}")
@@ -290,32 +402,31 @@ def emit(ch, m):
     except Exception as err:
         # A watcher that cannot print its line wakes nobody, and from outside that reads
         # exactly like an idle bus. So it stops and says why, rather than polling on.
-        sys.stderr.write(f"bus-watch: Stopped, a message line could not be printed. "
-                         f"{type(err).__name__}: {err}\n")
-        sys.stderr.flush()
+        note(f"Stopped, a message line could not be printed. {type(err).__name__}: {err}")
         raise SystemExit(1)
+    emitted += 1
 
 def poll(ch):
+    # An unclassified channel is not polled: a silent scan would move its position past messages
+    # that a participant verdict, once the bus answers, should have printed.
+    if ch not in part:
+        return
     try:
         if part.get(ch):
             # participating channel: emit every new peer message (server drops our own)
-            j = get_json(f"{BASE}/api/messages/{enc(ch)}?after_id={last[ch]}&instance_id={enc(INSTANCE)}")
-            ms = j.get("messages") or []
+            ms = by_id(get_json(f"{BASE}/api/messages/{enc(ch)}?after_id={last[ch]}&instance_id={enc(INSTANCE)}"))
             for m in ms:
                 emit(ch, m)
-            if ms:
-                last[ch] = j.get("last_id") or last[ch]
+            last[ch] = newest(ms, last[ch])
         else:
             # silent scan: same poll WITHOUT instance_id so our own sends are visible;
             # our first own message graduates the channel (and emits peers' messages after it)
-            j = get_json(f"{BASE}/api/messages/{enc(ch)}?after_id={last[ch]}")
-            ms = j.get("messages") or []
+            ms = by_id(get_json(f"{BASE}/api/messages/{enc(ch)}?after_id={last[ch]}"))
             mine = [m.get("id") or 0 for m in ms if m.get("sender") == INSTANCE]
-            # Graduation cannot UN-MUTE a channel. Mute is the session's own instruction and it
-            # outranks every verdict including this one, because the ordinary way a session touches a
-            # muted channel is to POST in it: announcing a status in the rendezvous channel it
-            # deliberately does not want waking on is exactly that. Without this the mute lasts only
-            # until the session's own next post there, and it ends silently.
+            # Graduation never lifts a mute. Mute is the session's own instruction and it outranks
+            # every verdict including this one, because the ordinary way a session touches a muted
+            # channel is to POST in it, such as a status in the rendezvous channel it does not want
+            # waking on.
             if mine and ch not in MUTED:
                 part[ch] = True
                 note(f"now participating in channel: {ch}")
@@ -323,8 +434,7 @@ def poll(ch):
                 for m in ms:
                     if (m.get("id") or 0) > cutoff and m.get("sender") != INSTANCE:
                         emit(ch, m)
-            if ms:
-                last[ch] = j.get("last_id") or last[ch]
+            last[ch] = newest(ms, last[ch])
     except BusUnreachable as err:
         # A poll the bus did not answer is transient: a restart, a timeout. It goes to stderr
         # and never to stdout, because a stdout line is a wake-up and an outage is not a
@@ -337,10 +447,7 @@ def poll(ch):
         # Anything else is the watcher failing at its own job. Swallowed, it leaves a process
         # that polls forever and wakes nobody, alive from every angle and silent for a reason
         # no reader can see. So it stops here and names what went wrong.
-        sys.stderr.write(f"bus-watch: Stopped, polling channel {ch} failed. "
-                         f"{type(err).__name__}: {err}\n")
-        sys.stderr.flush()
-        raise SystemExit(1)
+        fatal(f"polling channel {ch} failed", err)
     else:
         if ch in away:
             away.discard(ch)
@@ -348,25 +455,36 @@ def poll(ch):
             sys.stderr.flush()
 
 sync_channels()
-started = True
 _watched = sorted(c for c in last if part.get(c))
 _silent  = sorted(c for c in last if not part.get(c))
-note(f"armed (filter={FILTER}) emitting={','.join(_watched)} "
+_mode = (", exit-on-message" if EXIT_ON_MESSAGE else "") + (", resumed" if resumed is not None else "")
+note(f"armed (filter={FILTER}{_mode}) emitting={','.join(_watched)} "
      f"silent-scan={','.join(_silent)} baselines={json.dumps(last)}")
+warn_unresumed()
+if started:
+    save_cursor()
 
+# Every line is printed with flush, so a saved position never covers a line still in a buffer.
 if ONCE:
     for ch in list(last.keys()):
         poll(ch)
+    save_cursor()
     sys.exit(0)
 
 while True:
     # Everything inside poll() and sync_channels() already tolerates a bus that is briefly away, so
     # a fault arriving HERE is the watcher itself and it stops the watch. This except exists to put
     # the reason in the log, never to swallow it: a caught fault that let the loop continue would be
-    # the silent wedge this whole file exists to prevent, and it is the defect #401 found.
+    # the silent wedge this whole file exists to prevent.
+    emitted = 0
     try:
         for ch in sync_channels():
             poll(ch)
     except Exception as exc:
         fatal("a poll round failed", exc)
+    if started:
+        save_cursor()
+    if EXIT_ON_MESSAGE and emitted:
+        note(f"woke the session with {emitted} message(s), exiting")
+        sys.exit(0)
     time.sleep(POLL_S)
