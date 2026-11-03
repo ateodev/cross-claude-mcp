@@ -277,6 +277,26 @@ async function runTests() {
     r = await api("POST", "/channels/pinned-channel/pin", { text: "x".repeat(5000), sender: "claude-1" });
     assert(r.status === 400, "Rejects text over the size limit");
 
+    // 17. Messages come back in the order they were sent, even when many share one second of the
+    // clock their timestamp is taken from
+    const burst = [];
+    for (let i = 0; i < 20; i++) {
+      r = await api("POST", "/messages", { channel: "burst", sender: "claude-1", content: `Burst ${i}` });
+      burst.push(r.data.id);
+    }
+    const newestSent = Math.max(...burst);
+    r = await api("GET", "/messages/burst?limit=1");
+    assert(r.data.messages[0]?.id === newestSent, "The newest message is the one sent last");
+    r = await api("GET", "/messages/burst?limit=20");
+    let ids = r.data.messages.map(m => m.id);
+    assert(ids.join() === burst.join() && r.data.last_id === newestSent, "A page of messages runs in send order and ends on the newest");
+    r = await api("GET", `/messages/burst?after_id=${burst[0]}`);
+    ids = r.data.messages.map(m => m.id);
+    assert(ids.join() === burst.slice(1).join() && r.data.last_id === newestSent, "Polling after an id returns the rest in send order");
+    r = await api("GET", `/messages/burst?after_id=${burst[0]}&instance_id=chatgpt-1`);
+    ids = r.data.messages.map(m => m.id);
+    assert(ids.join() === burst.slice(1).join() && r.data.last_id === newestSent, "Unread polling returns the rest in send order");
+
     console.log(`\n${"=".repeat(40)}`);
     console.log(`Results: ${passed} passed, ${failed} failed`);
     console.log(`${"=".repeat(40)}`);

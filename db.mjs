@@ -236,21 +236,21 @@ class SqliteDB {
   getMessages(channel, limit) {
     return this.db.prepare(
       `SELECT m.*, (SELECT COUNT(*) FROM messages r WHERE r.in_reply_to = m.id) as reply_count
-       FROM messages m WHERE m.channel = ? ORDER BY m.created_at DESC LIMIT ?`
+       FROM messages m WHERE m.channel = ? ORDER BY m.id DESC LIMIT ?`
     ).all(channel, limit);
   }
 
   getMessagesSince(channel, afterId) {
     return this.db.prepare(
       `SELECT m.*, (SELECT COUNT(*) FROM messages r WHERE r.in_reply_to = m.id) as reply_count
-       FROM messages m WHERE m.channel = ? AND m.id > ? ORDER BY m.created_at ASC`
+       FROM messages m WHERE m.channel = ? AND m.id > ? ORDER BY m.id ASC`
     ).all(channel, afterId);
   }
 
   getUnread(channel, afterId, instanceId) {
     return this.db.prepare(
       `SELECT m.*, (SELECT COUNT(*) FROM messages r WHERE r.in_reply_to = m.id) as reply_count
-       FROM messages m WHERE m.channel = ? AND m.id > ? AND m.sender != ? ORDER BY m.created_at ASC`
+       FROM messages m WHERE m.channel = ? AND m.id > ? AND m.sender != ? ORDER BY m.id ASC`
     ).all(channel, afterId, instanceId);
   }
 
@@ -259,7 +259,7 @@ class SqliteDB {
   }
 
   getReplies(messageId) {
-    return this.db.prepare(`SELECT * FROM messages WHERE in_reply_to = ? ORDER BY created_at ASC`).all(messageId);
+    return this.db.prepare(`SELECT * FROM messages WHERE in_reply_to = ? ORDER BY id ASC`).all(messageId);
   }
 
   listInstances() {
@@ -269,7 +269,7 @@ class SqliteDB {
   searchMessages(query, limit) {
     return this.db.prepare(
       `SELECT m.*, (SELECT COUNT(*) FROM messages r WHERE r.in_reply_to = m.id) as reply_count
-       FROM messages m WHERE m.content LIKE ? ORDER BY m.created_at DESC LIMIT ?`
+       FROM messages m WHERE m.content LIKE ? ORDER BY m.id DESC LIMIT ?`
     ).all(`%${query}%`, limit);
   }
 
@@ -485,7 +485,7 @@ class PostgresDB {
   async getMessages(channel, limit) {
     const result = await this.pool.query(
       `SELECT m.*, (SELECT COUNT(*)::int FROM messages r WHERE r.in_reply_to = m.id) as reply_count
-       FROM messages m WHERE m.channel = $1 ORDER BY m.created_at DESC LIMIT $2`,
+       FROM messages m WHERE m.channel = $1 ORDER BY m.id DESC LIMIT $2`,
       [channel, limit]
     );
     return result.rows;
@@ -494,7 +494,7 @@ class PostgresDB {
   async getMessagesSince(channel, afterId) {
     const result = await this.pool.query(
       `SELECT m.*, (SELECT COUNT(*)::int FROM messages r WHERE r.in_reply_to = m.id) as reply_count
-       FROM messages m WHERE m.channel = $1 AND m.id > $2 ORDER BY m.created_at ASC`,
+       FROM messages m WHERE m.channel = $1 AND m.id > $2 ORDER BY m.id ASC`,
       [channel, afterId]
     );
     return result.rows;
@@ -503,7 +503,7 @@ class PostgresDB {
   async getUnread(channel, afterId, instanceId) {
     const result = await this.pool.query(
       `SELECT m.*, (SELECT COUNT(*)::int FROM messages r WHERE r.in_reply_to = m.id) as reply_count
-       FROM messages m WHERE m.channel = $1 AND m.id > $2 AND m.sender != $3 ORDER BY m.created_at ASC`,
+       FROM messages m WHERE m.channel = $1 AND m.id > $2 AND m.sender != $3 ORDER BY m.id ASC`,
       [channel, afterId, instanceId]
     );
     return result.rows;
@@ -516,7 +516,7 @@ class PostgresDB {
 
   async getReplies(messageId) {
     const result = await this.pool.query(
-      `SELECT * FROM messages WHERE in_reply_to = $1 ORDER BY created_at ASC`,
+      `SELECT * FROM messages WHERE in_reply_to = $1 ORDER BY id ASC`,
       [messageId]
     );
     return result.rows;
@@ -530,7 +530,7 @@ class PostgresDB {
   async searchMessages(query, limit) {
     const result = await this.pool.query(
       `SELECT m.*, (SELECT COUNT(*)::int FROM messages r WHERE r.in_reply_to = m.id) as reply_count
-       FROM messages m WHERE m.content ILIKE $1 ORDER BY m.created_at DESC LIMIT $2`,
+       FROM messages m WHERE m.content ILIKE $1 ORDER BY m.id DESC LIMIT $2`,
       [`%${query}%`, limit]
     );
     return result.rows;
